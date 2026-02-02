@@ -1,5 +1,9 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include "deps/imgui/imgui.h"
+#include "deps/imgui/backends/imgui_impl_glfw.h"
+#include "deps/imgui/backends/imgui_impl_opengl3.h"
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -7,7 +11,7 @@
 #include <limits>
 #include "Erosion.h"
 #include "Mesh.h"
-#include "FastNoiseLite.h"
+#include "deps/FastNoiseLite.h"
 #include "MatrixHelper.h"
 
 static double lastX = 0.0, lastY = 0.0;
@@ -25,6 +29,15 @@ static void updateCursorState(GLFWwindow *win)
 // Input callbacks
 static void mouse_button_cb(GLFWwindow *w, int button, int action, int mods)
 {
+    // forward to ImGui
+    ImGui_ImplGlfw_MouseButtonCallback(w, button, action, mods);
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.WantCaptureMouse)
+    {
+        if (action == GLFW_PRESS)
+            updateCursorState(w);
+        return;
+    }
     if (button == GLFW_MOUSE_BUTTON_LEFT)
     {
         leftDown = (action == GLFW_PRESS);
@@ -40,8 +53,18 @@ static void mouse_button_cb(GLFWwindow *w, int button, int action, int mods)
 
 static void cursor_pos_cb(GLFWwindow *w, double xpos, double ypos)
 {
+    // forward to ImGui
+    ImGui_ImplGlfw_CursorPosCallback(w, xpos, ypos);
+    ImGuiIO &io = ImGui::GetIO();
     double dx = xpos - lastX;
     double dy = ypos - lastY;
+    if (io.WantCaptureMouse)
+    {
+        // update cursor state to avoid jumps when leaving UI
+        lastX = xpos;
+        lastY = ypos;
+        return;
+    }
     lastX = xpos;
     lastY = ypos;
     if (leftDown)
@@ -78,6 +101,11 @@ static void cursor_pos_cb(GLFWwindow *w, double xpos, double ypos)
 
 static void scroll_cb(GLFWwindow *w, double xoffset, double yoffset)
 {
+    // forward to ImGui
+    ImGui_ImplGlfw_ScrollCallback(w, xoffset, yoffset);
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.WantCaptureMouse)
+        return;
     if (yoffset == 0.0)
         return;
     float zoomFactor = (yoffset > 0) ? 0.85f : 1.15f;
@@ -88,6 +116,11 @@ static void scroll_cb(GLFWwindow *w, double xoffset, double yoffset)
 
 static void key_cb(GLFWwindow *w, int key, int scancode, int action, int mods)
 {
+    // forward to ImGui
+    ImGui_ImplGlfw_KeyCallback(w, key, scancode, action, mods);
+    ImGuiIO &io = ImGui::GetIO();
+    if (io.WantCaptureKeyboard)
+        return;
     if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
     {
         cam = camParams();
@@ -133,59 +166,127 @@ static std::string loadFile(const char *path)
     return s;
 }
 
-static std::vector<float> generateHightMap(int size, PerlinParams p)
+float fbm(
+    FastNoiseLite &noise,
+    float x,
+    float y,
+    const PerlinParams &p,
+    const std::vector<Vector2> &offsets)
 {
-    std::vector<float> map = std::vector<float>(size * size, 0.0f);
-    std::mt19937 rgen(70);
-    std::uniform_int_distribution<int> dist(-1000, 1000);
-    std::vector<Vector2> offsets(p.numOctaves);
+    float frequency = 1.0f / p.initialScale;
+    float amplitude = 1.0f;
+    float value = 0.0f;
+    float ampSum = 0.0f;
 
-    for (auto &v : offsets)
+    for (int o = 0; o < p.numOctaves; o++)
     {
-        v = Vector2{
-            static_cast<float>(dist(rgen)),
-            static_cast<float>(dist(rgen))};
+        float nx = offsets[o].x + x * frequency;
+        float ny = offsets[o].y + y * frequency;
+
+        float n = noise.GetNoise(nx, ny); // [-1,1]
+
+        value += n * amplitude;
+        ampSum += amplitude;
+
+        amplitude *= p.persistence;
+        frequency *= p.lacunarity;
     }
 
-    float minValue = std::numeric_limits<float>::max();
-    float maxValue = std::numeric_limits<float>::lowest();
+    return value / ampSum; // normalized to [-1,1]
+}
+
+static std::vector<float> generateHeightMap(
+    int size,
+    const PerlinParams &p)
+{
+    std::vector<float> map(size * size);
+
+    std::mt19937 rgen(70);
+    std::uniform_real_distribution<float> dist(-10000.f, 10000.f);
+
+    std::vector<Vector2> offsets(p.numOctaves);
+    for (auto &v : offsets)
+        v = {dist(rgen), dist(rgen)};
 
     FastNoiseLite noise;
-    noise.SetNoiseType(FastNoiseLite::NoiseType::NoiseType_Perlin);
+    noise.SetNoiseType(FastNoiseLite::NoiseType_Perlin);
+    noise.SetFrequency(1.0f);
+
+    auto fbm = [&](float x, float y)
+    {
+        float frequency = 1.0f / p.initialScale;
+        float amplitude = 1.0f;
+        float value = 0.0f;
+        float ampSum = 0.0f;
+
+        for (int o = 0; o < p.numOctaves; o++)
+        {
+            float nx = offsets[o].x + x * frequency;
+            float ny = offsets[o].y + y * frequency;
+
+            float n = noise.GetNoise(nx, ny); // [-1,1]
+
+            value += n * amplitude;
+            ampSum += amplitude;
+
+            amplitude *= p.persistence;
+            frequency *= p.lacunarity;
+        }
+
+        return value / ampSum; // [-1,1]
+    };
+
+    auto ridged = [&](float n)
+    {
+        n = std::abs(n);
+        n = 1.0f - n;
+        return n * n;
+    };
+
+    auto ridgedFBM = [&](float x, float y)
+    {
+        float frequency = 1.0f / p.initialScale;
+        float amplitude = 0.5f;
+        float value = 0.0f;
+        float weight = 1.0f;
+
+        for (int o = 0; o < p.numOctaves; o++)
+        {
+            float nx = offsets[o].x + x * frequency;
+            float ny = offsets[o].y + y * frequency;
+
+            float n = noise.GetNoise(nx, ny);
+            float r = ridged(n);
+
+            r *= weight;
+            weight = std::clamp(r * 2.0f, 0.0f, 1.0f);
+
+            value += r * amplitude;
+
+            frequency *= p.lacunarity;
+            amplitude *= p.persistence;
+        }
+
+        return value;
+    };
+
+    auto erosionBias = [&](float h)
+    {
+        h = (h + 1.0f) * 0.5f; // [-1,1] to [0,1]
+        return std::pow(h, 1.4f);
+    };
 
     for (int y = 0; y < size; y++)
     {
         for (int x = 0; x < size; x++)
         {
-            float noiseValue = 0.0f;
-            float scale = p.initialScale;
-            float weight = 1.0f;
+            float base = fbm((float)x, (float)y);
+            float ridges = ridgedFBM((float)x, (float)y);
 
-            for (int octave = 0; octave < p.numOctaves; octave++)
-            {
-                Vector2 point;
-                point.x = offsets[octave].x + (float)x / (float)size * scale;
-                point.y = offsets[octave].y + (float)y / (float)size * scale;
+            float h = base * 0.6f + ridges * 0.4f;
+            h = erosionBias(h);
 
-                float n = noise.GetNoise(point.x, point.y);
-                n = (n + 1.0f) * 0.5f; // force [0,1]
-                noiseValue += n * weight;
-
-                weight *= p.persistence;
-                scale *= p.lacunarity;
-            }
-
-            map[y * size + x] = noiseValue;
-            minValue = (noiseValue < minValue) ? noiseValue : minValue;
-            maxValue = (noiseValue > maxValue) ? noiseValue : maxValue;
-        }
-    }
-
-    if (maxValue != minValue)
-    {
-        for (auto &v : map)
-        {
-            v = (v - minValue) / (maxValue - minValue);
+            map[y * size + x] = h;
         }
     }
 
@@ -212,9 +313,19 @@ int main()
         return -1;
     }
 
+    // ----- Setup Dear ImGui -----
+    const char *glsl_version = "#version 330";
+    ImGui::CreateContext();
+    ImGuiIO &io = ImGui::GetIO();
+    (void)io;
+    ImGui::StyleColorsDark();
+    // Do not let ImGui install GLFW callbacks; we install our own and forward events.
+    ImGui_ImplGlfw_InitForOpenGL(win, false);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+
     ErosionParams eparams;
     PerlinParams pparams;
-    std::vector<float> heightmap = generateHightMap(eparams.mapSize, pparams);
+    std::vector<float> heightmap = generateHeightMap(eparams.mapSize, pparams);
 
     // apply hydraulic erosion
     // Erosion::applyHydraulicErosion(heightmap, eparams);
@@ -257,7 +368,7 @@ int main()
     glEnable(GL_DEPTH_TEST);
 
     // basic camera/matrices
-    Mat4 proj = perspective(45.0f * 3.14159265f / 180.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
+    // Mat4 proj = perspective(45.0f * 3.14159265f / 180.0f, 1280.0f / 720.0f, 0.1f, 100.0f);
     Mat4 model = mul(translate(0.0f, -0.3f, 0.0f), scale(2.0f));
 
     GLint uMVP = glGetUniformLocation(prog, "uMVP");
@@ -280,6 +391,9 @@ int main()
         glClearColor(0.18f, 0.18f, 0.19f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        float aspect = (h > 0) ? (float)w / (float)h : 1.0f;
+        Mat4 proj = perspective(45.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
+
         // compute camera eye from spherical coords
         float eyeX = cam.targetX + cam.distance * std::cos(cam.pitch) * std::sin(cam.yaw);
         float eyeY = cam.targetY + cam.distance * std::sin(cam.pitch);
@@ -290,11 +404,6 @@ int main()
         glUseProgram(prog);
 
         glUniform3f(glGetUniformLocation(prog, "uBaseColour"), 0.2f, 0.8f, 0.3f);
-        glUniform3f(glGetUniformLocation(prog, "uRimColour"), 1.0f, 1.0f, 1.0f);
-        glUniform1f(glGetUniformLocation(prog, "uRimPower"), 2.0f);
-        glUniform1f(glGetUniformLocation(prog, "uRimFac"), 0.5f);
-        glUniform1f(glGetUniformLocation(prog, "uMinHeight"), 0.0f); // min Y of terrain
-        glUniform1f(glGetUniformLocation(prog, "uMaxHeight"), 1.0f); // max Y of terrain
 
         glUniformMatrix4fv(glGetUniformLocation(prog, "uModel"), 1, GL_FALSE, model.m);
         glUniformMatrix4fv(glGetUniformLocation(prog, "uView"), 1, GL_FALSE, view.m);
@@ -321,9 +430,76 @@ int main()
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, (GLsizei)mesh.indices.size(), GL_UNSIGNED_INT, 0);
 
+        // ----- ImGui UI -----
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Erosion Controls");
+        ImGui::Text("Map / Erosion Parameters");
+        if (ImGui::SliderInt("Map Size", &eparams.mapSize, 32, 1024))
+        {
+            // clamp to reasonable sizes
+            if (eparams.mapSize < 32)
+                eparams.mapSize = 32;
+        }
+        ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 1000000);
+        ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
+        ImGui::SliderFloat("Inertia", &eparams.inertia, 0.0f, 1.0f);
+        ImGui::SliderFloat("Sediment Capacity Factor", &eparams.sedimentCapacityFactor, 0.0f, 10.0f);
+        ImGui::SliderFloat("Min Sediment Capacity", &eparams.minSedimentCapacity, 0.0f, 1.0f);
+        ImGui::SliderFloat("Erode Speed", &eparams.erodeSpeed, 0.0f, 1.0f);
+        ImGui::SliderFloat("Deposit Speed", &eparams.depositSpeed, 0.0f, 1.0f);
+        ImGui::SliderFloat("Evaporate Speed", &eparams.evaporateSpeed, 0.0f, 1.0f);
+        ImGui::SliderFloat("Gravity", &eparams.gravity, 0.0f, 20.0f);
+
+        ImGui::Separator();
+        ImGui::Text("Perlin Noise");
+        ImGui::SliderInt("Octaves", &pparams.numOctaves, 1, 12);
+        ImGui::SliderFloat("Persistence", &pparams.persistence, 0.0f, 1.0f);
+        ImGui::SliderFloat("Lacunarity", &pparams.lacunarity, 1.0f, 6.0f);
+        ImGui::SliderFloat("Initial Scale", &pparams.initialScale, 1.0f, 2000.0f);
+
+        if (ImGui::Button("Regenerate Heightmap"))
+        {
+            heightmap = generateHeightMap(eparams.mapSize, pparams);
+            mesh = MeshBuilder::buildGrid(eparams.mapSize, heightmap);
+            // upload new buffers
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, nbo);
+            glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Apply Erosion"))
+        {
+            Erosion::applyHydraulicErosion(heightmap, eparams);
+            mesh = MeshBuilder::buildGrid(eparams.mapSize, heightmap);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, nbo);
+            glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Mesh info: %d vertices, %d indices", (int)(mesh.vertices.size() / 3), (int)mesh.indices.size());
+        ImGui::End();
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
+
+    // Shutdown ImGui
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 
     glfwDestroyWindow(win);
     glfwTerminate();
