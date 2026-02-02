@@ -101,7 +101,6 @@ static void cursor_pos_cb(GLFWwindow *w, double xpos, double ypos)
 
 static void scroll_cb(GLFWwindow *w, double xoffset, double yoffset)
 {
-    // forward to ImGui
     ImGui_ImplGlfw_ScrollCallback(w, xoffset, yoffset);
     ImGuiIO &io = ImGui::GetIO();
     if (io.WantCaptureMouse)
@@ -116,7 +115,6 @@ static void scroll_cb(GLFWwindow *w, double xoffset, double yoffset)
 
 static void key_cb(GLFWwindow *w, int key, int scancode, int action, int mods)
 {
-    // forward to ImGui
     ImGui_ImplGlfw_KeyCallback(w, key, scancode, action, mods);
     ImGuiIO &io = ImGui::GetIO();
     if (io.WantCaptureKeyboard)
@@ -224,7 +222,7 @@ static std::vector<float> generateHeightMap(
             float nx = offsets[o].x + x * frequency;
             float ny = offsets[o].y + y * frequency;
 
-            float n = noise.GetNoise(nx, ny); // [-1,1]
+            float n = noise.GetNoise(nx, ny);
 
             value += n * amplitude;
             ampSum += amplitude;
@@ -233,7 +231,7 @@ static std::vector<float> generateHeightMap(
             frequency *= p.lacunarity;
         }
 
-        return value / ampSum; // [-1,1]
+        return value / ampSum;
     };
 
     auto ridged = [&](float n)
@@ -283,7 +281,7 @@ static std::vector<float> generateHeightMap(
             float base = fbm((float)x, (float)y);
             float ridges = ridgedFBM((float)x, (float)y);
 
-            float h = base * 0.6f + ridges * 0.4f;
+            float h = base * 0.5f + ridges * 0.5f;
             h = erosionBias(h);
 
             map[y * size + x] = h;
