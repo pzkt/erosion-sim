@@ -35,7 +35,6 @@ static void generateBrush(int brushRadius, std::vector<int> &brushIndexOffsets, 
             if (sqr <= r * r)
             {
                 brushIndexOffsets.push_back(by * mapSize + bx);
-                // weight falls off with distance (linear), center has highest weight
                 float w = 1.0f - std::sqrt(sqr) / float(r);
                 weightSum += w;
                 brushWeights.push_back(w);
@@ -71,29 +70,28 @@ void calculateHeightAndGradient(const std::vector<float> &heightmap, int mapSize
     outGradY = (heightSW - heightNW) * (1 - x) + (heightSE - heightNE) * x;
 }
 
-void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p)
+void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
 {
-    const int size = p.mapSize;
-
     std::vector<int> brushIndexOffsets;
     std::vector<float> brushWeights;
-    generateBrush(p.brushRadius, brushIndexOffsets, brushWeights, size);
+    generateBrush(p.brushRadius, brushIndexOffsets, brushWeights, mapSize);
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> distr(p.brushRadius, size + p.brushRadius);
+    // std::uniform_int_distribution<> distr(p.brushRadius, mapSize + p.brushRadius);
+    std::uniform_int_distribution<> distr(0, mapSize - 1);
 
     std::vector<int> randomIndices(p.numDrops);
     for (int i = 0; i < p.numDrops; ++i)
     {
-        randomIndices[i] = distr(gen) * size + distr(gen);
+        randomIndices[i] = distr(gen) * mapSize + distr(gen);
     }
 
     for (int drop = 0; drop < p.numDrops; ++drop)
     {
         int nodeIndex = randomIndices[drop];
-        float posX = float(nodeIndex % size);
-        float posY = float(nodeIndex) / size;
+        float posX = float(nodeIndex % mapSize);
+        float posY = float(nodeIndex) / mapSize;
 
         float dirX = 0.0f, dirY = 0.0f;
         float speed = p.startSpeed;
@@ -104,14 +102,14 @@ void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const Erosion
         {
             int nodeX = (int)posX;
             int nodeY = (int)posY;
-            int dropletIndex = nodeY * size + nodeX;
+            int dropletIndex = nodeY * mapSize + nodeX;
 
             // compute droplet's offset inside the cell (0-1)
             float cellOffsetX = posX - float(nodeX);
             float cellOffsetY = posY - float(nodeY);
             // compute height and gradient at current position
             float height, gradX, gradY;
-            calculateHeightAndGradient(heightmap, size, posX, posY, height, gradX, gradY);
+            calculateHeightAndGradient(heightmap, mapSize, posX, posY, height, gradX, gradY);
             // update direction and move
             dirX = dirX * p.inertia - gradX * (1.0f - p.inertia);
             dirY = dirY * p.inertia - gradY * (1.0f - p.inertia);
@@ -123,11 +121,11 @@ void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const Erosion
             posY += dirY;
 
             // stop sim if droplet is outside bounds
-            if ((dirX == 0 && dirY == 0) || posX < p.brushRadius || posX > size - p.brushRadius || posY < p.brushRadius || posY > size - p.brushRadius)
+            if ((dirX == 0 && dirY == 0) || posX < p.brushRadius || posX > mapSize - p.brushRadius || posY < p.brushRadius || posY > mapSize - p.brushRadius)
                 break;
             // compute new height
             float newHeight, newGradX, newGradY;
-            calculateHeightAndGradient(heightmap, size, posX, posY, newHeight, newGradX, newGradY);
+            calculateHeightAndGradient(heightmap, mapSize, posX, posY, newHeight, newGradX, newGradY);
             float deltaHeight = newHeight - height;
 
             // compute sediment capacity
@@ -141,8 +139,8 @@ void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const Erosion
                 // deposit using bilinear interpolation
                 heightmap[dropletIndex] += amountToDeposit * (1 - cellOffsetX) * (1 - cellOffsetY);
                 heightmap[dropletIndex + 1] += amountToDeposit * cellOffsetX * (1 - cellOffsetY);
-                heightmap[dropletIndex + size] += amountToDeposit * (1 - cellOffsetX) * cellOffsetY;
-                heightmap[dropletIndex + size + 1] += amountToDeposit * cellOffsetX * cellOffsetY;
+                heightmap[dropletIndex + mapSize] += amountToDeposit * (1 - cellOffsetX) * cellOffsetY;
+                heightmap[dropletIndex + mapSize + 1] += amountToDeposit * cellOffsetX * cellOffsetY;
             }
             else
             {

@@ -9,10 +9,9 @@
 #include <cmath>
 #include <random>
 #include <limits>
-#include "Erosion.h"
-#include "Mesh.h"
+#include "CPU/Erosion.h"
 #include "deps/FastNoiseLite.h"
-#include "MatrixHelper.h"
+#include "helper.h"
 
 static double lastX = 0.0, lastY = 0.0;
 static bool leftDown = false, rightDown = false;
@@ -164,12 +163,7 @@ static std::string loadFile(const char *path)
     return s;
 }
 
-float fbm(
-    FastNoiseLite &noise,
-    float x,
-    float y,
-    const PerlinParams &p,
-    const std::vector<Vector2> &offsets)
+float fbm(FastNoiseLite &noise, float x, float y, const PerlinParams &p, const std::vector<Vector2> &offsets)
 {
     float frequency = 1.0f / p.initialScale;
     float amplitude = 1.0f;
@@ -193,9 +187,7 @@ float fbm(
     return value / ampSum; // normalized to [-1,1]
 }
 
-static std::vector<float> generateHeightMap(
-    int size,
-    const PerlinParams &p)
+static std::vector<float> generateHeightMap(int size, const PerlinParams &p)
 {
     std::vector<float> map(size * size);
 
@@ -321,15 +313,16 @@ int main()
     ImGui_ImplGlfw_InitForOpenGL(win, false);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    MapParams mparams;
     ErosionParams eparams;
     PerlinParams pparams;
-    std::vector<float> heightmap = generateHeightMap(eparams.mapSize, pparams);
+    std::vector<float> heightmap = generateHeightMap(mparams.size, pparams);
 
     // apply hydraulic erosion
     // Erosion::applyHydraulicErosion(heightmap, eparams);
 
     // build mesh from heightmap
-    Mesh mesh = MeshBuilder::buildGrid(eparams.mapSize, heightmap);
+    Mesh mesh = buildGrid(mparams.size, heightmap);
 
     // upload to GPU
     GLuint vao, vbo, nbo, ebo;
@@ -435,11 +428,11 @@ int main()
 
         ImGui::Begin("Erosion Controls");
         ImGui::Text("Map / Erosion Parameters");
-        if (ImGui::SliderInt("Map Size", &eparams.mapSize, 32, 1024))
+        if (ImGui::SliderInt("Map Size", &mparams.size, 32, 1024))
         {
             // clamp to reasonable sizes
-            if (eparams.mapSize < 32)
-                eparams.mapSize = 32;
+            if (mparams.size < 32)
+                mparams.size = 32;
         }
         ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 1000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
@@ -460,8 +453,8 @@ int main()
 
         if (ImGui::Button("Regenerate Heightmap"))
         {
-            heightmap = generateHeightMap(eparams.mapSize, pparams);
-            mesh = MeshBuilder::buildGrid(eparams.mapSize, heightmap);
+            heightmap = generateHeightMap(mparams.size, pparams);
+            mesh = buildGrid(mparams.size, heightmap);
             // upload new buffers
             glBindBuffer(GL_ARRAY_BUFFER, vbo);
             glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
@@ -473,8 +466,8 @@ int main()
         ImGui::SameLine();
         if (ImGui::Button("Apply Erosion"))
         {
-            Erosion::applyHydraulicErosion(heightmap, eparams);
-            mesh = MeshBuilder::buildGrid(eparams.mapSize, heightmap);
+            Erosion::applyHydraulicErosion(heightmap, eparams, mparams.size);
+            mesh = buildGrid(mparams.size, heightmap);
             glBindBuffer(GL_ARRAY_BUFFER, vbo);
             glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
             glBindBuffer(GL_ARRAY_BUFFER, nbo);
