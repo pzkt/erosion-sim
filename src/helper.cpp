@@ -115,7 +115,7 @@ Mesh buildGrid(const std::vector<float> &heightmap, MapParams mparams)
         border = (mapSizeWithBorder - size) / 2;
     }
 
-    // fill vertices (single loop like Unity implementation)
+    // fill vertices
     for (int i = 0; i < size * size; ++i)
     {
         int x = i % size;
@@ -135,15 +135,12 @@ Mesh buildGrid(const std::vector<float> &heightmap, MapParams mparams)
         if (hmIndex >= 0 && hmIndex < (int)heightmap.size())
             normalizedHeight = heightmap[hmIndex];
 
-        // float mean = 0.5f;
-        // float py = normalizedHeight * elevationScale;
         float py = (normalizedHeight - 0.5f) * elevationScale;
 
         m.vertices[meshMapIndex * 3 + 0] = px;
         m.vertices[meshMapIndex * 3 + 1] = py;
         m.vertices[meshMapIndex * 3 + 2] = pz;
 
-        // construct triangles same ordering as Unity
         if (x != size - 1 && y != size - 1)
         {
             int t = (y * (size - 1) + x) * 6;
@@ -157,7 +154,6 @@ Mesh buildGrid(const std::vector<float> &heightmap, MapParams mparams)
         }
     }
 
-    // compute normals by accumulating face normals
     auto addNormal = [&](int vi, float nx, float ny, float nz)
     {
         m.normals[vi * 3 + 0] += nx;

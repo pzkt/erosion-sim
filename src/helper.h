@@ -32,7 +32,7 @@ struct camParams
 
 struct MapParams
 {
-    int size = 512;
+    int size = 512; // 512
     float scale = 5.0f;
     float elevationScale = 8.0f;
 };

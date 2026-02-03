@@ -50,6 +50,17 @@ void calculateHeightAndGradient(const std::vector<float> &heightmap, int mapSize
 {
     int nodeX = (int)posX;
     int nodeY = (int)posY;
+
+    // clamp to valid range so we can safely sample neighbours (nodeX/nodeY up to mapSize-2)
+    if (nodeX < 0)
+        nodeX = 0;
+    if (nodeY < 0)
+        nodeY = 0;
+    if (nodeX > mapSize - 2)
+        nodeX = mapSize - 2;
+    if (nodeY > mapSize - 2)
+        nodeY = mapSize - 2;
+
     int dropletIndex = nodeY * mapSize + nodeX;
 
     // compute droplet's offset inside the cell (0-1)
@@ -121,7 +132,7 @@ void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const Erosion
             posY += dirY;
 
             // stop sim if droplet is outside bounds
-            if ((dirX == 0 && dirY == 0) || posX < p.brushRadius || posX > mapSize - p.brushRadius || posY < p.brushRadius || posY > mapSize - p.brushRadius)
+            if ((dirX == 0 && dirY == 0) || posX < 0 || posX >= mapSize - 1 || posY < 0 || posY >= mapSize - 1)
                 break;
             // compute new height
             float newHeight, newGradX, newGradY;
@@ -149,6 +160,8 @@ void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const Erosion
                 for (size_t bi = 0; bi < brushIndexOffsets.size(); bi++)
                 {
                     int erodeIndex = dropletIndex + brushIndexOffsets[bi];
+                    if (erodeIndex < 0 || erodeIndex >= (int)heightmap.size())
+                        continue; // skip out-of-bounds
                     float weightedErodeAmount = amountToErode * brushWeights[bi];
                     float deltaSediment = (heightmap[erodeIndex] < weightedErodeAmount) ? heightmap[erodeIndex] : weightedErodeAmount;
                     heightmap[erodeIndex] -= deltaSediment;
