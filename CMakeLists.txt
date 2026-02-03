@@ -36,7 +36,7 @@ set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/imgui)
 add_executable(ErosionSim
     src/main.cpp
     src/helper.cpp
-    src/CPU/Erosion.cpp
+    src/CPU/erosion.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

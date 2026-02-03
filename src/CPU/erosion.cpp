@@ -1,4 +1,4 @@
-#include "Erosion.h"
+#include "erosion.h"
 #include <vector>
 #include <random>
 #include <cmath>

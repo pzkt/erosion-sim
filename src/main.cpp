@@ -9,7 +9,7 @@
 #include <cmath>
 #include <random>
 #include <limits>
-#include "CPU/Erosion.h"
+#include "CPU/erosion.h"
 #include "deps/FastNoiseLite.h"
 #include "helper.h"
 
