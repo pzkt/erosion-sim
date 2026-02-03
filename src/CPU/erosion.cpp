@@ -1,4 +1,4 @@
-#include "erosion.h"
+#include "cpu.h"
 #include <vector>
 #include <random>
 #include <cmath>
@@ -81,7 +81,7 @@ void calculateHeightAndGradient(const std::vector<float> &heightmap, int mapSize
     outGradY = (heightSW - heightNW) * (1 - x) + (heightSE - heightNE) * x;
 }
 
-void Erosion::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
+void Cpu::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
 {
     std::vector<int> brushIndexOffsets;
     std::vector<float> brushWeights;

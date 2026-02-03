@@ -1,4 +1,4 @@
-#include "map.h"
+#include "cpu.h"
 #include "deps/FastNoiseLite.h"
 #include "helper.h"
 #include <vector>
@@ -29,7 +29,7 @@ float fbm(FastNoiseLite &noise, float x, float y, const PerlinParams &p, const s
     return value / ampSum; // normalized to [-1,1]
 }
 
-std::vector<float> Map::generateHeightMap(int size, const PerlinParams &p)
+std::vector<float> Cpu::generateHeightMap(int size, const PerlinParams &p)
 {
     std::vector<float> map(size * size);
 

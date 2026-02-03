@@ -3,8 +3,9 @@
 #include <cstdint>
 #include "helper.h"
 
-class Erosion
+class Cpu
 {
 public:
     static void applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize);
+    static std::vector<float> generateHeightMap(int size, const PerlinParams &p);
 };

@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(ErosionSim LANGUAGES CXX)
+project(ErosionSim LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_ARCHITECTURES native)
 
 include(FetchContent)
 
@@ -38,6 +39,8 @@ add_executable(ErosionSim
     src/helper.cpp
     src/CPU/erosion.cpp
     src/CPU/map.cpp
+    src/GPU/map.cu
+    src/GPU/erosion.cu
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

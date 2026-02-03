@@ -9,8 +9,8 @@
 #include <cmath>
 #include <random>
 #include <limits>
-#include "CPU/erosion.h"
-#include "CPU/map.h"
+#include "CPU/cpu.h"
+#include "GPU/gpu.h"
 #include "helper.h"
 
 static double lastX = 0.0, lastY = 0.0;
@@ -163,6 +163,18 @@ static std::string loadFile(const char *path)
     return s;
 }
 
+static Mesh buildAndUploadGrid(GLuint vbo, GLuint nbo, GLuint ebo, const std::vector<float> &heightmap, const MapParams &mparams)
+{
+    Mesh mesh = buildGrid(heightmap, mparams);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, nbo);
+    glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+    return mesh;
+}
+
 int main()
 {
     if (!glfwInit())
@@ -196,27 +208,24 @@ int main()
     MapParams mparams;
     ErosionParams eparams;
     PerlinParams pparams;
-    std::vector<float> heightmap = Map::generateHeightMap(mparams.size, pparams);
+    // std::vector<float> heightmap = Cpu::generateHeightMap(mparams.size, pparams);
+    //  generate heightmap on GPU instead of CPU
+    std::vector<float> heightmap((size_t)mparams.size * (size_t)mparams.size);
+    // Cpu::generateHeightMap would return a vector; replace with GPU call
+    Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
 
     // apply hydraulic erosion
     // Erosion::applyHydraulicErosion(heightmap, eparams);
-
-    // build mesh from heightmap
-    Mesh mesh = buildGrid(heightmap, mparams);
 
     // upload to GPU
     GLuint vao, vbo, nbo, ebo;
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
     glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
     glGenBuffers(1, &nbo);
-    glBindBuffer(GL_ARRAY_BUFFER, nbo);
-    glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
     glGenBuffers(1, &ebo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+
+    Mesh mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
 
     // load shaders from configured copy
     std::string vsrc = loadFile("shaders/terrain.vert");
@@ -244,7 +253,8 @@ int main()
 
     GLint uMVP = glGetUniformLocation(prog, "uMVP");
     GLint uModel = glGetUniformLocation(prog, "uModel");
-    GLint uLightDirLoc = glGetUniformLocation(prog, "uLightDir");
+    GLint uView = glGetUniformLocation(prog, "uView");
+    GLint uProj = glGetUniformLocation(prog, "uProj");
     GLint uViewPosLoc = glGetUniformLocation(prog, "uViewPos");
 
     // set input callbacks
@@ -274,11 +284,9 @@ int main()
 
         glUseProgram(prog);
 
-        glUniform3f(glGetUniformLocation(prog, "uBaseColour"), 0.2f, 0.8f, 0.3f);
-
-        glUniformMatrix4fv(glGetUniformLocation(prog, "uModel"), 1, GL_FALSE, model.m);
-        glUniformMatrix4fv(glGetUniformLocation(prog, "uView"), 1, GL_FALSE, view.m);
-        glUniformMatrix4fv(glGetUniformLocation(prog, "uProj"), 1, GL_FALSE, proj.m);
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, model.m);
+        glUniformMatrix4fv(uView, 1, GL_FALSE, view.m);
+        glUniformMatrix4fv(uProj, 1, GL_FALSE, proj.m);
 
         // position
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -309,7 +317,7 @@ int main()
         ImGui::Begin("Control Panel");
         ImGui::Text("Map Parameters");
         ImGui::SliderInt("Map Size", &mparams.size, 32, 1024);
-        ImGui::SliderFloat("Scale", &mparams.scale, 1.0f, 100.0f);
+        ImGui::SliderFloat("Scale", &mparams.scale, 1.0f, 10.0f);
         ImGui::SliderFloat("Elevation Scale", &mparams.elevationScale, 0.1f, 50.0f);
         ImGui::Separator();
 
@@ -330,30 +338,20 @@ int main()
         ImGui::SliderFloat("Deposit Speed", &eparams.depositSpeed, 0.0f, 1.0f);
         ImGui::SliderFloat("Evaporate Speed", &eparams.evaporateSpeed, 0.0f, 1.0f);
         ImGui::SliderFloat("Gravity", &eparams.gravity, 0.0f, 20.0f);
+        ImGui::Separator();
 
         if (ImGui::Button("Regenerate Heightmap"))
         {
-            heightmap = Map::generateHeightMap(mparams.size, pparams);
-            mesh = buildGrid(heightmap, mparams);
-            // upload new buffers
-            glBindBuffer(GL_ARRAY_BUFFER, vbo);
-            glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, nbo);
-            glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+            // regenerate on GPU
+            // heightmap = Cpu::generateHeightMap(mparams.size, pparams);
+            Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
+            mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
         }
         ImGui::SameLine();
         if (ImGui::Button("Apply Erosion"))
         {
-            Erosion::applyHydraulicErosion(heightmap, eparams, mparams.size);
-            mesh = buildGrid(heightmap, mparams);
-            glBindBuffer(GL_ARRAY_BUFFER, vbo);
-            glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ARRAY_BUFFER, nbo);
-            glBufferData(GL_ARRAY_BUFFER, mesh.normals.size() * sizeof(float), mesh.normals.data(), GL_STATIC_DRAW);
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(unsigned int), mesh.indices.data(), GL_STATIC_DRAW);
+            Cpu::applyHydraulicErosion(heightmap, eparams, mparams.size);
+            mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
         }
 
         ImGui::Separator();
