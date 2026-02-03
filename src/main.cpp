@@ -322,7 +322,7 @@ int main()
     // Erosion::applyHydraulicErosion(heightmap, eparams);
 
     // build mesh from heightmap
-    Mesh mesh = buildGrid(mparams.size, heightmap);
+    Mesh mesh = buildGrid(heightmap, mparams);
 
     // upload to GPU
     GLuint vao, vbo, nbo, ebo;
@@ -426,14 +426,21 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("Erosion Controls");
+        ImGui::Begin("Control Panel");
+        ImGui::Text("Map Parameters");
+        ImGui::SliderInt("Map Size", &mparams.size, 32, 1024);
+        ImGui::SliderFloat("Scale", &mparams.scale, 1.0f, 100.0f);
+        ImGui::SliderFloat("Elevation Scale", &mparams.elevationScale, 0.1f, 50.0f);
+        ImGui::Separator();
+
+        ImGui::Text("Perlin Noise");
+        ImGui::SliderInt("Octaves", &pparams.numOctaves, 1, 12);
+        ImGui::SliderFloat("Persistence", &pparams.persistence, 0.0f, 1.0f);
+        ImGui::SliderFloat("Lacunarity", &pparams.lacunarity, 1.0f, 6.0f);
+        ImGui::SliderFloat("Initial Scale", &pparams.initialScale, 1.0f, 2000.0f);
+        ImGui::Separator();
+
         ImGui::Text("Map / Erosion Parameters");
-        if (ImGui::SliderInt("Map Size", &mparams.size, 32, 1024))
-        {
-            // clamp to reasonable sizes
-            if (mparams.size < 32)
-                mparams.size = 32;
-        }
         ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 1000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
         ImGui::SliderFloat("Inertia", &eparams.inertia, 0.0f, 1.0f);
@@ -444,17 +451,10 @@ int main()
         ImGui::SliderFloat("Evaporate Speed", &eparams.evaporateSpeed, 0.0f, 1.0f);
         ImGui::SliderFloat("Gravity", &eparams.gravity, 0.0f, 20.0f);
 
-        ImGui::Separator();
-        ImGui::Text("Perlin Noise");
-        ImGui::SliderInt("Octaves", &pparams.numOctaves, 1, 12);
-        ImGui::SliderFloat("Persistence", &pparams.persistence, 0.0f, 1.0f);
-        ImGui::SliderFloat("Lacunarity", &pparams.lacunarity, 1.0f, 6.0f);
-        ImGui::SliderFloat("Initial Scale", &pparams.initialScale, 1.0f, 2000.0f);
-
         if (ImGui::Button("Regenerate Heightmap"))
         {
             heightmap = generateHeightMap(mparams.size, pparams);
-            mesh = buildGrid(mparams.size, heightmap);
+            mesh = buildGrid(heightmap, mparams);
             // upload new buffers
             glBindBuffer(GL_ARRAY_BUFFER, vbo);
             glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
@@ -467,7 +467,7 @@ int main()
         if (ImGui::Button("Apply Erosion"))
         {
             Erosion::applyHydraulicErosion(heightmap, eparams, mparams.size);
-            mesh = buildGrid(mparams.size, heightmap);
+            mesh = buildGrid(heightmap, mparams);
             glBindBuffer(GL_ARRAY_BUFFER, vbo);
             glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(float), mesh.vertices.data(), GL_STATIC_DRAW);
             glBindBuffer(GL_ARRAY_BUFFER, nbo);
