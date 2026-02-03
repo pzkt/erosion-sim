@@ -344,6 +344,7 @@ int main()
         {
             // regenerate on GPU
             // heightmap = Cpu::generateHeightMap(mparams.size, pparams);
+            heightmap.resize((size_t)mparams.size * (size_t)mparams.size);
             Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
             mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
         }

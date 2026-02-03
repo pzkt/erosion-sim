@@ -133,7 +133,6 @@ __global__ void generateKernel(float *d_map, int size, PerlinParams p, const flo
 
 void Gpu::generateHeightmap(float *heightmap, int size, PerlinParams p)
 {
-    std::cout << "Generating heightmap with size " << size << " on GPU\n";
     const size_t mapBytes = size * size * sizeof(float);
     const size_t offsetsBytes = p.numOctaves * sizeof(float2);
 
@@ -151,8 +150,6 @@ void Gpu::generateHeightmap(float *heightmap, int size, PerlinParams p)
     for (auto &v : offsets)
         v = {dist(rgen), dist(rgen)};
 
-    // Copy offsets to device
-    // CHECK_CUDA(cudaMemcpy(d_offsets, , offsetsBytes, cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_offsets, offsets.data(), offsetsBytes, cudaMemcpyHostToDevice));
 
     dim3 block(16, 16);
