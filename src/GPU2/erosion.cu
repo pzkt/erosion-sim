@@ -2,6 +2,10 @@
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <cstdio>
+#include <cmath>
+#include <ctime>
+
+const int DROPS_PER_THREAD = 8;
 
 static void generateBrush(int brushRadius, std::vector<int> &brushIndexOffsets, std::vector<float> &brushWeights, int mapSize)
 {
@@ -67,109 +71,136 @@ static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize,
     outGradY = (heightSW - heightNW) * (1 - x) + (heightSE - heightNE) * x;
 }
 
-static __global__ void initRNG(curandState *states, unsigned int seed, int numDrops)
+static __global__ void initRNG(curandState *states, unsigned int seed, int numStates)
 {
     int id = globalThreadId();
-    if (id >= numDrops)
+    if (id >= numStates)
         return;
     curand_init(seed, id, 0, &states[id]);
 }
 
-static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops)
+static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int dropsPerThread, int tilesPerRow)
 {
     int id = globalThreadId();
-    if (id >= numDrops)
+    int totalThreads = gridDim.x * blockDim.x;
+    if (id >= totalThreads)
         return;
 
     curandState localState = states[id];
 
-    // pick a start node ensuring we stay inside the bilinear interpolation bounds
-    int nodeIndex = (int)(curand_uniform(&localState) * ((mapSize - 1) * (mapSize - 1)));
-    float posX = float(nodeIndex % (mapSize - 1));
-    float posY = float(nodeIndex / (mapSize - 1));
+    // tile this block works on (tilesPerRow x tilesPerRow grid)
+    int tileX = blockIdx.x % tilesPerRow;
+    int tileY = blockIdx.x / tilesPerRow;
+    int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow; // ceil div
+    int tileMinX = tileX * tileSize;
+    int tileMinY = tileY * tileSize;
 
-    float dirX = 0.0f, dirY = 0.0f;
-    float speed = p.startSpeed;
-    float water = p.startWater;
-    float sediment = 0.0f;
+    // compute global drop index range this thread should handle
+    int threadStartDrop = id * dropsPerThread;
 
-    for (int lifetime = 0; lifetime < p.maxLifetime; lifetime++)
+    for (int d = 0; d < dropsPerThread; d++)
     {
-        int nodeX = (int)posX;
-        int nodeY = (int)posY;
-        int dropletIndex = nodeY * mapSize + nodeX;
-
-        // droplet offset in cell
-        float cellOffsetX = posX - float(nodeX);
-        float cellOffsetY = posY - float(nodeY);
-
-        // compute height & gradient
-        float height, gradX, gradY;
-        calculateHeightAndGradient(d_map, mapSize, posX, posY, height, gradX, gradY);
-
-        // update direction
-        dirX = dirX * p.inertia - gradX * (1.0f - p.inertia);
-        dirY = dirY * p.inertia - gradY * (1.0f - p.inertia);
-        float len = fmaxf(0.01f, sqrtf(dirX * dirX + dirY * dirY));
-        dirX /= len;
-        dirY /= len;
-        posX += dirX;
-        posY += dirY;
-
-        // stop if outside safe bounds for bilinear interpolation
-        if (posX < 0.0f || posX >= mapSize - 1 || posY < 0.0f || posY >= mapSize - 1)
+        int globalDropIdx = threadStartDrop + d;
+        if (globalDropIdx >= numDrops)
             break;
 
-        // compute new height & delta
-        float newHeight, newGradX, newGradY;
-        calculateHeightAndGradient(d_map, mapSize, posX, posY, newHeight, newGradX, newGradY);
-        float deltaHeight = newHeight - height;
+        // pick a start within the block's tile to improve locality
+        /*         float rx = curand_uniform(&localState);
+                float ry = curand_uniform(&localState);
+                float posX = tileMinX + rx * (float)fmaxf(1, tileSize - 1);
+                float posY = tileMinY + ry * (float)fmaxf(1, tileSize - 1); */
 
-        // sediment capacity
-        float sedimentCapacity = fmaxf(-deltaHeight * speed * water * p.sedimentCapacityFactor, p.minSedimentCapacity);
+        int nodeIndex = (int)(curand_uniform(&localState) * ((mapSize - 1) * (mapSize - 1)));
+        float posX = float(nodeIndex % (mapSize - 1));
+        float posY = float(nodeIndex / (mapSize - 1));
 
-        if (sediment > sedimentCapacity || deltaHeight > 0.0f)
+        // clamp to safe bilinear sampling region
+        posX = fminf(posX, mapSize - 2.0001f);
+        posY = fminf(posY, mapSize - 2.0001f);
+
+        float dirX = 0.0f, dirY = 0.0f;
+        float speed = p.startSpeed;
+        float water = p.startWater;
+        float sediment = 0.0f;
+
+        for (int lifetime = 0; lifetime < p.maxLifetime; lifetime++)
         {
-            // deposit sediment safely
-            int safeX = nodeX;
-            int safeY = nodeY;
-            if (safeX >= mapSize - 1)
-                safeX = mapSize - 2;
-            if (safeY >= mapSize - 1)
-                safeY = mapSize - 2;
+            int nodeX = (int)posX;
+            int nodeY = (int)posY;
+            int dropletIndex = nodeY * mapSize + nodeX;
 
-            int safeIndex = safeY * mapSize + safeX;
-            float amountToDeposit = (deltaHeight > 0.0f) ? fminf(deltaHeight, sediment) : (sediment - sedimentCapacity) * p.depositSpeed;
-            sediment -= amountToDeposit;
+            // droplet offset in cell
+            float cellOffsetX = posX - float(nodeX);
+            float cellOffsetY = posY - float(nodeY);
 
-            atomicAdd(&d_map[safeIndex], amountToDeposit * (1 - cellOffsetX) * (1 - cellOffsetY));
-            atomicAdd(&d_map[safeIndex + 1], amountToDeposit * cellOffsetX * (1 - cellOffsetY));
-            atomicAdd(&d_map[safeIndex + mapSize], amountToDeposit * (1 - cellOffsetX) * cellOffsetY);
-            atomicAdd(&d_map[safeIndex + mapSize + 1], amountToDeposit * cellOffsetX * cellOffsetY);
-        }
-        else
-        {
-            // erosion using brush safely: use linear index offsets to avoid negative-division issues
-            float amountToErode = fminf((sedimentCapacity - sediment) * p.erodeSpeed, -deltaHeight);
-            for (int bi = 0; bi < brushLength; bi++)
+            // compute height & gradient
+            float height, gradX, gradY;
+            calculateHeightAndGradient(d_map, mapSize, posX, posY, height, gradX, gradY);
+
+            // update direction
+            dirX = dirX * p.inertia - gradX * (1.0f - p.inertia);
+            dirY = dirY * p.inertia - gradY * (1.0f - p.inertia);
+            float len = fmaxf(0.01f, sqrtf(dirX * dirX + dirY * dirY));
+            dirX /= len;
+            dirY /= len;
+            posX += dirX;
+            posY += dirY;
+
+            // stop if outside safe bounds for bilinear interpolation
+            if (posX < 0.0f || posX >= mapSize - 1 || posY < 0.0f || posY >= mapSize - 1)
+                break;
+
+            // compute new height & delta
+            float newHeight, newGradX, newGradY;
+            calculateHeightAndGradient(d_map, mapSize, posX, posY, newHeight, newGradX, newGradY);
+            float deltaHeight = newHeight - height;
+
+            // sediment capacity
+            float sedimentCapacity = fmaxf(-deltaHeight * speed * water * p.sedimentCapacityFactor, p.minSedimentCapacity);
+
+            if (sediment > sedimentCapacity || deltaHeight > 0.0f)
             {
-                int offset = brushIndexOffsets[bi];
-                int erodeIndex = dropletIndex + offset;
+                // deposit sediment safely
+                int safeX = nodeX;
+                int safeY = nodeY;
+                if (safeX >= mapSize - 1)
+                    safeX = mapSize - 2;
+                if (safeY >= mapSize - 1)
+                    safeY = mapSize - 2;
 
-                // bounds check on linear index
-                if (erodeIndex < 0 || erodeIndex >= mapSize * mapSize)
-                    continue;
+                int safeIndex = safeY * mapSize + safeX;
+                float amountToDeposit = (deltaHeight > 0.0f) ? fminf(deltaHeight, sediment) : (sediment - sedimentCapacity) * p.depositSpeed;
+                sediment -= amountToDeposit;
 
-                float weightedErodeAmount = amountToErode * brushWeights[bi];
-                float deltaSediment = fminf(d_map[erodeIndex], weightedErodeAmount);
-
-                atomicAdd(&d_map[erodeIndex], -deltaSediment);
-                sediment += deltaSediment;
+                atomicAdd(&d_map[safeIndex], amountToDeposit * (1 - cellOffsetX) * (1 - cellOffsetY));
+                atomicAdd(&d_map[safeIndex + 1], amountToDeposit * cellOffsetX * (1 - cellOffsetY));
+                atomicAdd(&d_map[safeIndex + mapSize], amountToDeposit * (1 - cellOffsetX) * cellOffsetY);
+                atomicAdd(&d_map[safeIndex + mapSize + 1], amountToDeposit * cellOffsetX * cellOffsetY);
             }
-        }
+            else
+            {
+                // erosion using brush safely: use linear index offsets to avoid negative-division issues
+                float amountToErode = fminf((sedimentCapacity - sediment) * p.erodeSpeed, -deltaHeight);
+                for (int bi = 0; bi < brushLength; bi++)
+                {
+                    int offset = brushIndexOffsets[bi];
+                    int erodeIndex = dropletIndex + offset;
 
-        speed = sqrtf(fmaxf(0.0f, speed * speed + deltaHeight * p.gravity));
-        water *= (1.0f - p.evaporateSpeed);
+                    // bounds check on linear index
+                    if (erodeIndex < 0 || erodeIndex >= mapSize * mapSize)
+                        continue;
+
+                    float weightedErodeAmount = amountToErode * brushWeights[bi];
+                    float deltaSediment = fminf(d_map[erodeIndex], weightedErodeAmount);
+
+                    atomicAdd(&d_map[erodeIndex], -deltaSediment);
+                    sediment += deltaSediment;
+                }
+            }
+
+            speed = sqrtf(fmaxf(0.0f, speed * speed + deltaHeight * p.gravity));
+            water *= (1.0f - p.evaporateSpeed);
+        }
     }
 
     // save RNG state
@@ -196,14 +227,23 @@ void Gpu2::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPar
     CHECK_CUDA(cudaMemcpy(d_brushIndices, brushIndexOffsets.data(), brushIndexOffsets.size() * sizeof(int), cudaMemcpyHostToDevice));
 
     int threads = 256;
-    int blocks = (p.numDrops + threads - 1) / threads;
+
+    // determine how many threads we need to cover all drops given dropsPerThread
+    int dropsPerThread = DROPS_PER_THREAD > 0 ? DROPS_PER_THREAD : 8;
+    int numThreadsNeeded = (p.numDrops + dropsPerThread - 1) / dropsPerThread;
+    int blocks = (numThreadsNeeded + threads - 1) / threads;
+
+    // arrange blocks into a roughly square tile grid for spatial locality
+    int tilesPerRow = (int)ceilf(sqrtf((float)blocks));
+
+    int totalThreads = blocks * threads;
 
     curandState *d_states;
-    CHECK_CUDA(cudaMalloc(&d_states, p.numDrops * sizeof(curandState)));
+    CHECK_CUDA(cudaMalloc(&d_states, totalThreads * sizeof(curandState)));
 
-    initRNG<<<blocks, threads>>>(d_states, (unsigned int)time(NULL), p.numDrops);
+    initRNG<<<blocks, threads>>>(d_states, (unsigned int)time(NULL), totalThreads);
 
-    erosionKernel<<<blocks, threads>>>(d_map, p, mapSize, d_states, d_brushIndices, d_brushWeights, static_cast<int>(brushIndexOffsets.size()), p.numDrops);
+    erosionKernel<<<blocks, threads>>>(d_map, p, mapSize, d_states, d_brushIndices, d_brushWeights, static_cast<int>(brushIndexOffsets.size()), p.numDrops, dropsPerThread, tilesPerRow);
 
     CHECK_CUDA(cudaDeviceSynchronize());
     CHECK_CUDA(cudaMemcpy(heightmap.data(), d_map, mapBytes, cudaMemcpyDeviceToHost));
