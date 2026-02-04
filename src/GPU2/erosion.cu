@@ -105,14 +105,18 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
             break;
 
         // pick a start within the block's tile to improve locality
-        /*         float rx = curand_uniform(&localState);
-                float ry = curand_uniform(&localState);
-                float posX = tileMinX + rx * (float)fmaxf(1, tileSize - 1);
-                float posY = tileMinY + ry * (float)fmaxf(1, tileSize - 1); */
+        float rx = curand_uniform(&localState);
+        float ry = curand_uniform(&localState);
 
-        int nodeIndex = (int)(curand_uniform(&localState) * ((mapSize - 1) * (mapSize - 1)));
-        float posX = float(nodeIndex % (mapSize - 1));
-        float posY = float(nodeIndex / (mapSize - 1));
+        int tileMaxX = tileMinX + tileSize;
+        int tileMaxY = tileMinY + tileSize;
+        if (tileMaxX > mapSize - 1)
+            tileMaxX = mapSize - 1;
+        if (tileMaxY > mapSize - 1)
+            tileMaxY = mapSize - 1;
+        // sample uniformly inside the tile bounds (may be degenerate for very small tiles)
+        float posX = tileMinX + rx * float(tileMaxX - tileMinX);
+        float posY = tileMinY + ry * float(tileMaxY - tileMinY);
 
         // clamp to safe bilinear sampling region
         posX = fminf(posX, mapSize - 2.0001f);

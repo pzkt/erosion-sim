@@ -19,7 +19,7 @@
 static double lastX = 0.0, lastY = 0.0;
 static bool leftDown = false, rightDown = false;
 static camParams cam;
-static ComputeMode computeMode = ComputeMode::GPU0;
+static ComputeMode computeMode = ComputeMode::GPU2;
 
 static void updateCursorState(GLFWwindow *win)
 {

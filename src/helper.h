@@ -32,14 +32,14 @@ struct camParams
 
 struct MapParams
 {
-    int size = 512;
+    int size = 2048; // 512
     float scale = 5.0f;
     float elevationScale = 8.0f;
 };
 
 struct ErosionParams
 {
-    int numDrops = 1000000;
+    int numDrops = 10000000;
     int maxLifetime = 30;
     float inertia = 0.3f;
     float sedimentCapacityFactor = 4.0f;
