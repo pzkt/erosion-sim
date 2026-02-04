@@ -39,8 +39,10 @@ add_executable(ErosionSim
     src/helper.cpp
     src/CPU/erosion.cpp
     src/CPU/map.cpp
-    src/GPU/map.cu
-    src/GPU/erosion.cu
+    src/GPU0/map.cu
+    src/GPU0/erosion.cu
+    src/GPU1/map.cu
+    src/GPU1/erosion.cu
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

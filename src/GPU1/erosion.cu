@@ -27,12 +27,12 @@ static void generateBrush(int brushRadius, std::vector<int> &brushIndexOffsets, 
         w /= weightSum;
 }
 
-__device__ __forceinline__ int globalThreadId()
+static __device__ __forceinline__ int globalThreadId()
 {
     return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
-__device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float posX, float posY, float &outHeight, float &outGradX, float &outGradY)
+static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float posX, float posY, float &outHeight, float &outGradX, float &outGradY)
 {
     int nodeX = (int)posX;
     int nodeY = (int)posY;
@@ -67,7 +67,7 @@ __device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float 
     outGradY = (heightSW - heightNW) * (1 - x) + (heightSE - heightNE) * x;
 }
 
-__global__ void initRNG(curandState *states, unsigned int seed, int numDrops)
+static __global__ void initRNG(curandState *states, unsigned int seed, int numDrops)
 {
     int id = globalThreadId();
     if (id >= numDrops)
@@ -75,7 +75,7 @@ __global__ void initRNG(curandState *states, unsigned int seed, int numDrops)
     curand_init(seed, id, 0, &states[id]);
 }
 
-__global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops)
+static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops)
 {
     int id = globalThreadId();
     if (id >= numDrops)
@@ -176,7 +176,7 @@ __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curand
     states[id] = localState;
 }
 
-void Gpu::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
+void Gpu1::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
 {
     const size_t mapBytes = mapSize * mapSize * sizeof(float);
     float *d_map = nullptr, *d_brushWeights = nullptr;

@@ -32,14 +32,14 @@ struct camParams
 
 struct MapParams
 {
-    int size = 512; // 512
+    int size = 512;
     float scale = 5.0f;
     float elevationScale = 8.0f;
 };
 
 struct ErosionParams
 {
-    int numDrops = 600000;
+    int numDrops = 1000000;
     int maxLifetime = 30;
     float inertia = 0.3f;
     float sedimentCapacityFactor = 4.0f;
@@ -56,7 +56,7 @@ struct ErosionParams
 
 struct PerlinParams
 {
-    int numOctaves = 6;
+    int numOctaves = 10;
     float persistence = 0.45f;
     float lacunarity = 2.1f;
     float initialScale = 400.0f;
@@ -65,7 +65,8 @@ struct PerlinParams
 enum class ComputeMode
 {
     CPU,
-    GPU
+    GPU0,
+    GPU1
 };
 
 static inline float

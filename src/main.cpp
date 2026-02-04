@@ -11,13 +11,14 @@
 #include <limits>
 #include <chrono>
 #include "CPU/cpu.h"
-#include "GPU/gpu.h"
+#include "GPU0/gpu.h"
+#include "GPU1/gpu.h"
 #include "helper.h"
 
 static double lastX = 0.0, lastY = 0.0;
 static bool leftDown = false, rightDown = false;
 static camParams cam;
-static ComputeMode computeMode = ComputeMode::CPU;
+static ComputeMode computeMode = ComputeMode::GPU0;
 
 static void updateCursorState(GLFWwindow *win)
 {
@@ -184,8 +185,11 @@ static void applyHydraulicErosion(std::vector<float> &heightmap, int size, Erosi
     case ComputeMode::CPU:
         Cpu::applyHydraulicErosion(heightmap, e, size);
         break;
-    case ComputeMode::GPU:
-        Gpu::applyHydraulicErosion(heightmap, e, size);
+    case ComputeMode::GPU0:
+        Gpu0::applyHydraulicErosion(heightmap, e, size);
+        break;
+    case ComputeMode::GPU1:
+        Gpu1::applyHydraulicErosion(heightmap, e, size);
         break;
     }
 }
@@ -197,9 +201,13 @@ static void generateHeightmap(std::vector<float> &heightmap, int size, PerlinPar
     case ComputeMode::CPU:
         heightmap = Cpu::generateHeightMap(size, p);
         break;
-    case ComputeMode::GPU:
+    case ComputeMode::GPU0:
         heightmap.resize((size_t)size * (size_t)size);
-        Gpu::generateHeightmap(heightmap.data(), size, p);
+        Gpu0::generateHeightmap(heightmap.data(), size, p);
+        break;
+    case ComputeMode::GPU1:
+        heightmap.resize((size_t)size * (size_t)size);
+        Gpu1::generateHeightmap(heightmap.data(), size, p);
         break;
     }
 }
@@ -401,8 +409,11 @@ int main()
         if (ImGui::RadioButton("CPU", computeMode == ComputeMode::CPU))
             computeMode = ComputeMode::CPU;
         ImGui::SameLine();
-        if (ImGui::RadioButton("GPU", computeMode == ComputeMode::GPU))
-            computeMode = ComputeMode::GPU;
+        if (ImGui::RadioButton("GPU (naïve)", computeMode == ComputeMode::GPU0))
+            computeMode = ComputeMode::GPU0;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("GPU (optimized)", computeMode == ComputeMode::GPU1))
+            computeMode = ComputeMode::GPU1;
 
         ImGui::Separator();
         if (ImGui::BeginTable("Actions", 2, ImGuiTableFlags_SizingStretchSame))
@@ -422,7 +433,7 @@ int main()
                 regenDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
             }
 
-            ImGui::Text("Regen Duration:");
+            ImGui::Text("Regen Runtime:");
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Text, textColor);
             ImGui::Text("%d ms", static_cast<int>(regenDuration.count()));
@@ -442,10 +453,13 @@ int main()
                 erosionDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
             }
 
-            ImGui::Text("Erode Duration:");
+            ImGui::Text("Erode Runtime:");
             ImGui::SameLine();
             ImGui::PushStyleColor(ImGuiCol_Text, textColor);
-            ImGui::Text("%d ms", static_cast<int>(erosionDuration.count()));
+            if (static_cast<int>(erosionDuration.count()) == 0)
+                ImGui::TextUnformatted("n/a");
+            else
+                ImGui::Text("%d ms", static_cast<int>(erosionDuration.count()));
             ImGui::PopStyleColor();
             ImGui::EndTable();
         }
@@ -453,7 +467,7 @@ int main()
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::Text("Map Parameters");
-        ImGui::SliderInt("Map Size", &mparams.size, 32, 1024);
+        ImGui::SliderInt("Map Size", &mparams.size, 32, 2048);
         ImGui::SliderFloat("Scale", &mparams.scale, 1.0f, 10.0f);
         ImGui::SliderFloat("Elevation Scale", &mparams.elevationScale, 0.1f, 50.0f);
         ImGui::Separator();
@@ -467,8 +481,8 @@ int main()
         ImGui::Separator();
 
         ImGui::Spacing();
-        ImGui::Text("Map / Erosion Parameters");
-        ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 1000000);
+        ImGui::Text("Erosion Parameters");
+        ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 10000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
         ImGui::SliderFloat("Inertia", &eparams.inertia, 0.0f, 1.0f);
         ImGui::SliderFloat("Sediment Capacity Factor", &eparams.sedimentCapacityFactor, 0.0f, 10.0f);

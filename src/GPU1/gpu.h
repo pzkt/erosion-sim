@@ -3,7 +3,7 @@
 #include <cuda_runtime.h>
 #include "helper.h"
 
-class Gpu
+class Gpu1
 {
 public:
     static void applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize);
