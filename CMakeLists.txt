@@ -47,6 +47,8 @@ add_executable(ErosionSim
     src/GPU2/erosion.cu
     src/GPU3/map.cu
     src/GPU3/erosion.cu
+    src/GPUgridBased/map.cu
+    src/GPUgridBased/erosion.cu
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp

@@ -440,7 +440,6 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
                 int gx = tileMinX + lx;
                 int gy = tileMinY + ly;
                 int gidx = gy * mapSize + gx;
-                // exclusive tile ensures non-atomic add is safe; use atomicAdd for portability
                 atomicAdd(&d_map[gidx], v);
             }
         }

@@ -39,7 +39,7 @@ struct MapParams
 
 struct ErosionParams
 {
-    int numDrops = 10000000;
+    int numDrops = 1000000;
     int maxLifetime = 30;
     float inertia = 0.3f;
     float sedimentCapacityFactor = 4.0f;
