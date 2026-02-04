@@ -14,6 +14,7 @@
 #include "GPU0/gpu.h"
 #include "GPU1/gpu.h"
 #include "GPU2/gpu.h"
+#include "GPU3/gpu.h"
 #include "helper.h"
 
 static double lastX = 0.0, lastY = 0.0;
@@ -195,6 +196,9 @@ static void applyHydraulicErosion(std::vector<float> &heightmap, int size, Erosi
     case ComputeMode::GPU2:
         Gpu2::applyHydraulicErosion(heightmap, e, size);
         break;
+    case ComputeMode::GPU3:
+        Gpu3::applyHydraulicErosion(heightmap, e, size);
+        break;
     }
 }
 
@@ -216,6 +220,10 @@ static void generateHeightmap(std::vector<float> &heightmap, int size, PerlinPar
     case ComputeMode::GPU2:
         heightmap.resize((size_t)size * (size_t)size);
         Gpu2::generateHeightmap(heightmap.data(), size, p);
+        break;
+    case ComputeMode::GPU3:
+        heightmap.resize((size_t)size * (size_t)size);
+        Gpu3::generateHeightmap(heightmap.data(), size, p);
         break;
     }
 }
@@ -425,6 +433,9 @@ int main()
         ImGui::SameLine();
         if (ImGui::RadioButton("GPU (optimized)", computeMode == ComputeMode::GPU2))
             computeMode = ComputeMode::GPU2;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("GPU (experimental)", computeMode == ComputeMode::GPU3))
+            computeMode = ComputeMode::GPU3;
 
         ImGui::Separator();
         if (ImGui::BeginTable("Actions", 2, ImGuiTableFlags_SizingStretchSame))
