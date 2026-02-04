@@ -4,31 +4,92 @@
 #include <cstdio>
 #include <cmath>
 #include <ctime>
+#include <cstring>
 
-const int DROPS_PER_THREAD = 8;
+static constexpr int THREADS = 256;
+static constexpr int DROPS_PER_THREAD = 8;
 
-static void generateBrush(int brushRadius, std::vector<int> &brushIndexOffsets, std::vector<float> &brushWeights, int mapSize)
+// static member definitions
+float *Gpu2::d_map = nullptr;
+size_t Gpu2::d_mapBytes = 0;
+
+int *Gpu2::d_brushIndices = nullptr;
+float *Gpu2::d_brushWeights = nullptr;
+int Gpu2::brushLength = 0;
+int Gpu2::brushMapSize = 0;
+
+curandState *Gpu2::d_rngStates = nullptr;
+int Gpu2::rngStateCount = 0;
+
+float *Gpu2::h_pinnedMap = nullptr;
+size_t Gpu2::h_pinnedBytes = 0;
+
+cudaStream_t Gpu2::stream = nullptr;
+
+static void generateBrush(int radius, int mapSize, std::vector<int> &offsets, std::vector<float> &weights)
 {
-    int r = brushRadius;
-    float weightSum = 0.0f;
+    offsets.clear();
+    weights.clear();
 
-    for (int by = -r; by <= r; by++)
+    float sum = 0.f;
+
+    for (int y = -radius; y <= radius; ++y)
     {
-        for (int bx = -r; bx <= r; bx++)
+        for (int x = -radius; x <= radius; ++x)
         {
-            float sqr = float(bx * bx + by * by);
-            if (sqr <= r * r)
+            float d = sqrtf(float(x * x + y * y));
+            if (d <= radius)
             {
-                brushIndexOffsets.push_back(by * mapSize + bx);
-                float w = 1.0f - std::sqrt(sqr) / float(r);
-                weightSum += w;
-                brushWeights.push_back(w);
+                offsets.push_back(y * mapSize + x);
+                float w = 1.f - d / radius;
+                weights.push_back(w);
+                sum += w;
             }
         }
     }
-    // normalize weights
-    for (float &w : brushWeights)
-        w /= weightSum;
+
+    for (float &w : weights)
+        w /= sum;
+}
+
+void Gpu2::ensureStream()
+{
+    if (!stream)
+        CHECK_CUDA(cudaStreamCreate(&stream));
+}
+
+void Gpu2::uploadBrush(const ErosionParams &p, int mapSize)
+{
+    std::vector<int> offsets;
+    std::vector<float> weights;
+    generateBrush(p.brushRadius, mapSize, offsets, weights);
+
+    // re-create brush buffers if brush size changed or if mapSize changed
+    if ((int)offsets.size() != brushLength || mapSize != brushMapSize)
+    {
+        if (d_brushIndices)
+            cudaFree(d_brushIndices);
+        if (d_brushWeights)
+            cudaFree(d_brushWeights);
+
+        brushLength = (int)offsets.size();
+        brushMapSize = mapSize;
+
+        CHECK_CUDA(cudaMalloc(&d_brushIndices,
+                              brushLength * sizeof(int)));
+        CHECK_CUDA(cudaMalloc(&d_brushWeights,
+                              brushLength * sizeof(float)));
+
+        CHECK_CUDA(cudaMemcpyAsync(
+            d_brushIndices, offsets.data(),
+            brushLength * sizeof(int),
+            cudaMemcpyHostToDevice, stream));
+
+        CHECK_CUDA(cudaMemcpyAsync(
+            d_brushWeights, weights.data(),
+            brushLength * sizeof(float),
+            cudaMemcpyHostToDevice, stream));
+    }
 }
 
 static __device__ __forceinline__ int globalThreadId()
@@ -74,9 +135,8 @@ static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize,
 static __global__ void initRNG(curandState *states, unsigned int seed, int numStates)
 {
     int id = globalThreadId();
-    if (id >= numStates)
-        return;
-    curand_init(seed, id, 0, &states[id]);
+    if (id < numStates)
+        curand_init(seed, id, 0, &states[id]);
 }
 
 static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int dropsPerThread, int tilesPerRow)
@@ -89,8 +149,10 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
     curandState localState = states[id];
 
     // tile this block works on (tilesPerRow x tilesPerRow grid)
+
     int tileX = blockIdx.x % tilesPerRow;
     int tileY = blockIdx.x / tilesPerRow;
+
     int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow; // ceil div
     int tileMinX = tileX * tileSize;
     int tileMinY = tileY * tileSize;
@@ -213,47 +275,105 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
 
 void Gpu2::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
 {
-    const size_t mapBytes = mapSize * mapSize * sizeof(float);
-    float *d_map = nullptr, *d_brushWeights = nullptr;
-    int *d_brushIndices = nullptr;
+    ensureStream();
 
-    std::vector<int> brushIndexOffsets;
-    std::vector<float> brushWeights;
-    generateBrush(p.brushRadius, brushIndexOffsets, brushWeights, mapSize);
+    size_t bytes = mapSize * mapSize * sizeof(float);
+    ensurePinnedHost(bytes);
+    ensureDeviceMap(bytes);
 
-    CHECK_CUDA(cudaMalloc(&d_map, mapBytes));
-    CHECK_CUDA(cudaMemcpy(d_map, heightmap.data(), mapBytes, cudaMemcpyHostToDevice));
+    std::memcpy(h_pinnedMap, heightmap.data(), bytes);
 
-    CHECK_CUDA(cudaMalloc(&d_brushWeights, brushWeights.size() * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_brushWeights, brushWeights.data(), brushWeights.size() * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpyAsync(d_map, h_pinnedMap, bytes, cudaMemcpyHostToDevice, stream));
 
-    CHECK_CUDA(cudaMalloc(&d_brushIndices, brushIndexOffsets.size() * sizeof(int)));
-    CHECK_CUDA(cudaMemcpy(d_brushIndices, brushIndexOffsets.data(), brushIndexOffsets.size() * sizeof(int), cudaMemcpyHostToDevice));
+    uploadBrush(p, mapSize);
 
-    int threads = 256;
+    int dropsPerThread = DROPS_PER_THREAD;
+    int threadsNeeded = (p.numDrops + dropsPerThread - 1) / dropsPerThread;
 
-    // determine how many threads we need to cover all drops given dropsPerThread
-    int dropsPerThread = DROPS_PER_THREAD > 0 ? DROPS_PER_THREAD : 8;
-    int numThreadsNeeded = (p.numDrops + dropsPerThread - 1) / dropsPerThread;
-    int blocks = (numThreadsNeeded + threads - 1) / threads;
+    int blocks = (threadsNeeded + THREADS - 1) / THREADS;
+    int totalThreads = blocks * THREADS;
 
-    // arrange blocks into a roughly square tile grid for spatial locality
+    ensureRNG(totalThreads);
+
     int tilesPerRow = (int)ceilf(sqrtf((float)blocks));
 
-    int totalThreads = blocks * threads;
+    erosionKernel<<<blocks, THREADS, 0, stream>>>(
+        d_map, p, mapSize,
+        d_rngStates,
+        d_brushIndices,
+        d_brushWeights,
+        brushLength,
+        p.numDrops,
+        dropsPerThread,
+        tilesPerRow);
 
-    curandState *d_states;
-    CHECK_CUDA(cudaMalloc(&d_states, totalThreads * sizeof(curandState)));
+    CHECK_CUDA(cudaMemcpyAsync(h_pinnedMap, d_map, bytes, cudaMemcpyDeviceToHost, stream));
 
-    initRNG<<<blocks, threads>>>(d_states, (unsigned int)time(NULL), totalThreads);
+    CHECK_CUDA(cudaStreamSynchronize(stream));
 
-    erosionKernel<<<blocks, threads>>>(d_map, p, mapSize, d_states, d_brushIndices, d_brushWeights, static_cast<int>(brushIndexOffsets.size()), p.numDrops, dropsPerThread, tilesPerRow);
+    std::memcpy(heightmap.data(), h_pinnedMap, bytes);
+}
 
-    CHECK_CUDA(cudaDeviceSynchronize());
-    CHECK_CUDA(cudaMemcpy(heightmap.data(), d_map, mapBytes, cudaMemcpyDeviceToHost));
+void Gpu2::ensurePinnedHost(size_t bytes)
+{
+    if (h_pinnedBytes < bytes)
+    {
+        if (h_pinnedMap)
+            CHECK_CUDA(cudaFreeHost(h_pinnedMap));
 
-    CHECK_CUDA(cudaFree(d_map));
-    CHECK_CUDA(cudaFree(d_brushWeights));
-    CHECK_CUDA(cudaFree(d_brushIndices));
-    CHECK_CUDA(cudaFree(d_states));
+        CHECK_CUDA(cudaMallocHost(&h_pinnedMap, bytes));
+        h_pinnedBytes = bytes;
+    }
+}
+
+void Gpu2::ensureDeviceMap(size_t bytes)
+{
+    if (d_mapBytes < bytes)
+    {
+        if (d_map)
+            CHECK_CUDA(cudaFree(d_map));
+
+        CHECK_CUDA(cudaMalloc(&d_map, bytes));
+        d_mapBytes = bytes;
+    }
+}
+
+void Gpu2::ensureRNG(int totalThreads)
+{
+    if (rngStateCount < totalThreads)
+    {
+        if (d_rngStates)
+            CHECK_CUDA(cudaFree(d_rngStates));
+
+        rngStateCount = totalThreads;
+        CHECK_CUDA(cudaMalloc(&d_rngStates,
+                              rngStateCount * sizeof(curandState)));
+
+        int blocks = (rngStateCount + THREADS - 1) / THREADS;
+        initRNG<<<blocks, THREADS, 0, stream>>>(
+            d_rngStates, (unsigned)time(nullptr), rngStateCount);
+    }
+}
+
+void Gpu2::shutdown()
+{
+    if (d_map)
+        cudaFree(d_map);
+    if (d_brushIndices)
+        cudaFree(d_brushIndices);
+    if (d_brushWeights)
+        cudaFree(d_brushWeights);
+    if (d_rngStates)
+        cudaFree(d_rngStates);
+    if (h_pinnedMap)
+        cudaFreeHost(h_pinnedMap);
+    if (stream)
+        cudaStreamDestroy(stream);
+
+    d_map = nullptr;
+    d_brushIndices = nullptr;
+    d_brushWeights = nullptr;
+    d_rngStates = nullptr;
+    h_pinnedMap = nullptr;
+    stream = nullptr;
 }
