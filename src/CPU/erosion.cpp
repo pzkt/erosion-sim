@@ -6,22 +6,6 @@
 #include <cfloat>
 #include <iostream>
 
-static inline float clampf(float v, float a, float b)
-{
-    return v < a ? a : (v > b ? b : v);
-}
-
-struct particle
-{
-    float posX;
-    float posY;
-    float dirX;
-    float dirY;
-    float speed;
-    float water;
-    float sediment;
-};
-
 static void generateBrush(int brushRadius, std::vector<int> &brushIndexOffsets, std::vector<float> &brushWeights, int mapSize)
 {
     int r = brushRadius;
@@ -102,7 +86,7 @@ void Cpu::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPara
     {
         int nodeIndex = randomIndices[drop];
         float posX = float(nodeIndex % mapSize);
-        float posY = float(nodeIndex) / mapSize;
+        float posY = float(nodeIndex / mapSize);
 
         float dirX = 0.0f, dirY = 0.0f;
         float speed = p.startSpeed;
@@ -168,7 +152,6 @@ void Cpu::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPara
                     sediment += deltaSediment;
                 }
             }
-            // update speed & water (use compute-shader style)
             speed = std::sqrt(std::max(0.0f, speed * speed + deltaHeight * p.gravity));
             water *= (1.0f - p.evaporateSpeed);
         }

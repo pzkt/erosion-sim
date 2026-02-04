@@ -177,7 +177,7 @@ static Mesh buildAndUploadGrid(GLuint vbo, GLuint nbo, GLuint ebo, const std::ve
     return mesh;
 }
 
-static void applyHydraulicErosion(std::vector<float> heightmap, int size, ErosionParams e)
+static void applyHydraulicErosion(std::vector<float> &heightmap, int size, ErosionParams e)
 {
     switch (computeMode)
     {
@@ -185,12 +185,12 @@ static void applyHydraulicErosion(std::vector<float> heightmap, int size, Erosio
         Cpu::applyHydraulicErosion(heightmap, e, size);
         break;
     case ComputeMode::GPU:
-        // Gpu::applyHydraulicErosion(heightmap.data(), width, height, iterations, sedimentFactor);
+        Gpu::applyHydraulicErosion(heightmap, e, size);
         break;
     }
 }
 
-static void generateHeightmap(std::vector<float> heightmap, int size, PerlinParams p)
+static void generateHeightmap(std::vector<float> &heightmap, int size, PerlinParams p)
 {
     switch (computeMode)
     {
@@ -198,7 +198,6 @@ static void generateHeightmap(std::vector<float> heightmap, int size, PerlinPara
         heightmap = Cpu::generateHeightMap(size, p);
         break;
     case ComputeMode::GPU:
-        // resize vector to hold heightmap
         heightmap.resize((size_t)size * (size_t)size);
         Gpu::generateHeightmap(heightmap.data(), size, p);
         break;
@@ -292,16 +291,11 @@ int main()
     PerlinParams pparams;
 
     auto start = std::chrono::high_resolution_clock::now();
-    // std::vector<float> heightmap = Cpu::generateHeightMap(mparams.size, pparams);
-    //  generate heightmap on GPU instead of CPU
+
     std::vector<float> heightmap((size_t)mparams.size * (size_t)mparams.size);
-    // Cpu::generateHeightMap would return a vector; replace with GPU call
-    Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
+    generateHeightmap(heightmap, mparams.size, pparams);
 
     regenDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
-
-    // apply hydraulic erosion
-    // Erosion::applyHydraulicErosion(heightmap, eparams);
 
     // upload to GPU
     GLuint vao, vbo, nbo, ebo;
@@ -401,13 +395,16 @@ int main()
         ImGui::NewFrame();
         ImGui::Begin("Control Panel");
 
-        /*         if (ImGui::RadioButton("Option 1", selected == 0))
-                    selected = 0;
-                if (ImGui::RadioButton("Option 2", selected == 1))
-                    selected = 1;
-                if (ImGui::RadioButton("Option 3", selected == 2))
-                    selected = 2; */
+        ImGui::Text("Compute Mode");
+        ImGui::Spacing();
 
+        if (ImGui::RadioButton("CPU", computeMode == ComputeMode::CPU))
+            computeMode = ComputeMode::CPU;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("GPU", computeMode == ComputeMode::GPU))
+            computeMode = ComputeMode::GPU;
+
+        ImGui::Separator();
         if (ImGui::BeginTable("Actions", 2, ImGuiTableFlags_SizingStretchSame))
         {
 
@@ -419,9 +416,7 @@ int main()
             {
                 auto start = std::chrono::high_resolution_clock::now();
 
-                // heightmap = Cpu::generateHeightMap(mparams.size, pparams);
-                heightmap.resize((size_t)mparams.size * (size_t)mparams.size);
-                Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
+                generateHeightmap(heightmap, mparams.size, pparams);
                 mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
 
                 regenDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
@@ -441,7 +436,7 @@ int main()
             {
                 auto start = std::chrono::high_resolution_clock::now();
 
-                Cpu::applyHydraulicErosion(heightmap, eparams, mparams.size);
+                applyHydraulicErosion(heightmap, mparams.size, eparams);
                 mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
 
                 erosionDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);

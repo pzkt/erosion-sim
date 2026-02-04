@@ -6,7 +6,7 @@
 class Gpu
 {
 public:
-    static void applyHydraulicErosion(float *heightmap, int width, int height, int iterations, float sedimentFactor);
+    static void applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize);
     static void generateHeightmap(float *heightmap, int size, PerlinParams p);
 
     static void CHECK_CUDA(cudaError_t call, const char *msg = "")
