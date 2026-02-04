@@ -66,7 +66,8 @@ enum class ComputeMode
 {
     CPU,
     GPU0,
-    GPU1
+    GPU1,
+    GPU2
 };
 
 static inline float

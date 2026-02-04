@@ -13,6 +13,7 @@
 #include "CPU/cpu.h"
 #include "GPU0/gpu.h"
 #include "GPU1/gpu.h"
+#include "GPU2/gpu.h"
 #include "helper.h"
 
 static double lastX = 0.0, lastY = 0.0;
@@ -191,6 +192,9 @@ static void applyHydraulicErosion(std::vector<float> &heightmap, int size, Erosi
     case ComputeMode::GPU1:
         Gpu1::applyHydraulicErosion(heightmap, e, size);
         break;
+    case ComputeMode::GPU2:
+        Gpu2::applyHydraulicErosion(heightmap, e, size);
+        break;
     }
 }
 
@@ -208,6 +212,10 @@ static void generateHeightmap(std::vector<float> &heightmap, int size, PerlinPar
     case ComputeMode::GPU1:
         heightmap.resize((size_t)size * (size_t)size);
         Gpu1::generateHeightmap(heightmap.data(), size, p);
+        break;
+    case ComputeMode::GPU2:
+        heightmap.resize((size_t)size * (size_t)size);
+        Gpu2::generateHeightmap(heightmap.data(), size, p);
         break;
     }
 }
@@ -412,8 +420,11 @@ int main()
         if (ImGui::RadioButton("GPU (naïve)", computeMode == ComputeMode::GPU0))
             computeMode = ComputeMode::GPU0;
         ImGui::SameLine();
-        if (ImGui::RadioButton("GPU (optimized)", computeMode == ComputeMode::GPU1))
+        if (ImGui::RadioButton("GPU (gradient trick)", computeMode == ComputeMode::GPU1))
             computeMode = ComputeMode::GPU1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("GPU (optimized)", computeMode == ComputeMode::GPU2))
+            computeMode = ComputeMode::GPU2;
 
         ImGui::Separator();
         if (ImGui::BeginTable("Actions", 2, ImGuiTableFlags_SizingStretchSame))
@@ -439,28 +450,32 @@ int main()
             ImGui::Text("%d ms", static_cast<int>(regenDuration.count()));
             ImGui::PopStyleColor();
 
-            ImGui::TableNextColumn();
-            ImGui::Text("Erosion");
-            ImGui::Spacing();
-            ImGui::Checkbox("Continuously Erode", &autoErode);
-            if (ImGui::Button("Apply Erosion") || autoErode)
+            if (computeMode != ComputeMode::GPU1)
             {
-                auto start = std::chrono::high_resolution_clock::now();
+                ImGui::TableNextColumn();
+                ImGui::Text("Erosion");
+                ImGui::Spacing();
+                ImGui::Checkbox("Continuously Erode", &autoErode);
+                if (ImGui::Button("Apply Erosion") || autoErode)
+                {
+                    auto start = std::chrono::high_resolution_clock::now();
 
-                applyHydraulicErosion(heightmap, mparams.size, eparams);
-                mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
+                    applyHydraulicErosion(heightmap, mparams.size, eparams);
+                    mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
 
-                erosionDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+                    erosionDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+                }
+
+                ImGui::Text("Erode Runtime:");
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+                if (static_cast<int>(erosionDuration.count()) == 0)
+                    ImGui::TextUnformatted("n/a");
+                else
+                    ImGui::Text("%d ms", static_cast<int>(erosionDuration.count()));
+                ImGui::PopStyleColor();
             }
 
-            ImGui::Text("Erode Runtime:");
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, textColor);
-            if (static_cast<int>(erosionDuration.count()) == 0)
-                ImGui::TextUnformatted("n/a");
-            else
-                ImGui::Text("%d ms", static_cast<int>(erosionDuration.count()));
-            ImGui::PopStyleColor();
             ImGui::EndTable();
         }
 

@@ -4,17 +4,17 @@
 #include <helper.h>
 #include <random>
 
-__device__ inline float fade(float t)
+static __device__ inline float fade(float t)
 {
     return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
-__device__ inline float lerp(float a, float b, float t)
+static __device__ inline float lerp(float a, float b, float t)
 {
     return a + t * (b - a);
 }
 
-__device__ inline float grad(int hash, float x, float y)
+static __device__ inline float grad(int hash, float x, float y)
 {
     int h = hash & 7;
     float u = h < 4 ? x : y;
@@ -22,14 +22,14 @@ __device__ inline float grad(int hash, float x, float y)
     return ((h & 1) ? -u : u) + ((h & 2) ? -2.0f * v : 2.0f * v);
 }
 
-__device__ inline int hash2D(int x, int y)
+static __device__ inline int hash2D(int x, int y)
 {
     int h = x * 374761393 + y * 668265263;
     h = (h ^ (h >> 13)) * 1274126177;
     return h;
 }
 
-__device__ float perlin(float x, float y)
+static __device__ float perlin(float x, float y)
 {
     int x0 = (int)floorf(x);
     int y0 = (int)floorf(y);
@@ -51,7 +51,7 @@ __device__ float perlin(float x, float y)
     return lerp(nx0, nx1, v);
 }
 
-__device__ float fbm(float x, float y, const PerlinParams &p, const float2 *offsets)
+static __device__ float fbm(float x, float y, const PerlinParams &p, const float2 *offsets)
 {
     float frequency = 1.0f / p.initialScale;
     float amplitude = 1.0f;
@@ -75,14 +75,14 @@ __device__ float fbm(float x, float y, const PerlinParams &p, const float2 *offs
     return value / ampSum;
 }
 
-__device__ inline float ridged(float n)
+static __device__ inline float ridged(float n)
 {
     n = fabsf(n);
     n = 1.0f - n;
     return n * n;
 }
 
-__device__ float ridgedFBM(float x, float y, const PerlinParams &p, const float2 *offsets)
+static __device__ float ridgedFBM(float x, float y, const PerlinParams &p, const float2 *offsets)
 {
     float frequency = 1.0f / p.initialScale;
     float amplitude = 0.5f;
@@ -109,13 +109,13 @@ __device__ float ridgedFBM(float x, float y, const PerlinParams &p, const float2
     return value;
 }
 
-__device__ inline float erosionBias(float h)
+static __device__ inline float erosionBias(float h)
 {
     h = (h + 1.0f) * 0.5f;
     return powf(h, 1.4f);
 }
 
-__global__ void generateKernel(float *d_map, int size, PerlinParams p, const float2 *offsets)
+static __global__ void generateKernel(float *d_map, int size, PerlinParams p, const float2 *offsets)
 {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -131,8 +131,10 @@ __global__ void generateKernel(float *d_map, int size, PerlinParams p, const flo
     d_map[y * size + x] = h;
 }
 
-void Gpu::generateHeightmap(float *heightmap, int size, PerlinParams p)
+void GpuGB::generateHeightmap(float *heightmap, int size, PerlinParams p)
 {
+    std::cout << "Generating heightmap on GPU1..." << std::endl;
+
     const size_t mapBytes = size * size * sizeof(float);
     const size_t offsetsBytes = p.numOctaves * sizeof(float2);
 
