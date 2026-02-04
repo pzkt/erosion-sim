@@ -205,14 +205,12 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
     curandState localState = states[id];
 
     // tile this block works on (tilesPerRow x tilesPerRow grid)
-
     int tileX = blockIdx.x % tilesPerRow;
     int tileY = blockIdx.x / tilesPerRow;
 
     int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow; // ceil div
     int tileMinX = tileX * tileSize;
     int tileMinY = tileY * tileSize;
-    // Expand tile by 1 on right and bottom so bilinear/deposit neighbor accesses remain inside tile
     int tileWidth = tileSize + 1;
     int tileHeight = tileSize + 1;
     if (tileMinX + tileWidth > mapSize)
@@ -244,15 +242,11 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
         float rx = curand_uniform(&localState);
         float ry = curand_uniform(&localState);
 
-        int tileMaxX = tileMinX + tileSize;
-        int tileMaxY = tileMinY + tileSize;
-        if (tileMaxX > mapSize - 1)
-            tileMaxX = mapSize - 1;
-        if (tileMaxY > mapSize - 1)
-            tileMaxY = mapSize - 1;
-        // sample uniformly inside the tile bounds (may be degenerate for very small tiles)
-        float posX = tileMinX + rx * float(tileMaxX - tileMinX);
-        float posY = tileMinY + ry * float(tileMaxY - tileMinY);
+        int tileMaxX = min(tileMinX + tileSize, mapSize - 1);
+        int tileMaxY = min(tileMinY + tileSize, mapSize - 1);
+
+        float posX = tileMinX + rx * (tileMaxX - tileMinX);
+        float posY = tileMinY + ry * (tileMaxY - tileMinY);
 
         // clamp to safe bilinear sampling region
         posX = fminf(posX, mapSize - 2.0001f);
@@ -300,13 +294,9 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
 
             if (sediment > sedimentCapacity || deltaHeight > 0.0f)
             {
-                // deposit sediment safely
-                int safeX = nodeX;
-                int safeY = nodeY;
-                if (safeX >= mapSize - 1)
-                    safeX = mapSize - 2;
-                if (safeY >= mapSize - 1)
-                    safeY = mapSize - 2;
+                // Deposit sediment safely
+                int safeX = min(nodeX, mapSize - 2);
+                int safeY = min(nodeY, mapSize - 2);
 
                 int safeIndex = safeY * mapSize + safeX;
                 float amountToDeposit = (deltaHeight > 0.0f) ? fminf(deltaHeight, sediment) : (sediment - sedimentCapacity) * p.depositSpeed;
@@ -486,7 +476,7 @@ void Gpu3::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPar
     int maxTileWidth = tileSize + 1;
     int maxTileHeight = tileSize + 1;
     int maxTileArea = maxTileWidth * maxTileHeight;
-    const int MAX_SHARED_BYTES = 48 * 1024; // 48KB typical safe shared memory
+    const int MAX_SHARED_BYTES = 48 * 1024;
     size_t sharedBytes = 0;
     bool useShared = false;
     if ((size_t)maxTileArea * sizeof(float) <= (size_t)MAX_SHARED_BYTES)
