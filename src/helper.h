@@ -62,7 +62,17 @@ struct PerlinParams
     float initialScale = 400.0f;
 };
 
-static inline float vlen(float x, float y, float z) { return std::sqrt(x * x + y * y + z * z); }
+enum class ComputeMode
+{
+    CPU,
+    GPU
+};
+
+static inline float
+vlen(float x, float y, float z)
+{
+    return std::sqrt(x * x + y * y + z * z);
+}
 
 static inline void vnorm(float &x, float &y, float &z)
 {

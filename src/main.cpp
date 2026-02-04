@@ -9,6 +9,7 @@
 #include <cmath>
 #include <random>
 #include <limits>
+#include <chrono>
 #include "CPU/cpu.h"
 #include "GPU/gpu.h"
 #include "helper.h"
@@ -16,6 +17,7 @@
 static double lastX = 0.0, lastY = 0.0;
 static bool leftDown = false, rightDown = false;
 static camParams cam;
+static ComputeMode computeMode = ComputeMode::CPU;
 
 static void updateCursorState(GLFWwindow *win)
 {
@@ -175,6 +177,34 @@ static Mesh buildAndUploadGrid(GLuint vbo, GLuint nbo, GLuint ebo, const std::ve
     return mesh;
 }
 
+static void applyHydraulicErosion(std::vector<float> heightmap, int size, ErosionParams e)
+{
+    switch (computeMode)
+    {
+    case ComputeMode::CPU:
+        Cpu::applyHydraulicErosion(heightmap, e, size);
+        break;
+    case ComputeMode::GPU:
+        // Gpu::applyHydraulicErosion(heightmap.data(), width, height, iterations, sedimentFactor);
+        break;
+    }
+}
+
+static void generateHeightmap(std::vector<float> heightmap, int size, PerlinParams p)
+{
+    switch (computeMode)
+    {
+    case ComputeMode::CPU:
+        heightmap = Cpu::generateHeightMap(size, p);
+        break;
+    case ComputeMode::GPU:
+        // resize vector to hold heightmap
+        heightmap.resize((size_t)size * (size_t)size);
+        Gpu::generateHeightmap(heightmap.data(), size, p);
+        break;
+    }
+}
+
 int main()
 {
     if (!glfwInit())
@@ -201,18 +231,74 @@ int main()
     ImGuiIO &io = ImGui::GetIO();
     (void)io;
     ImGui::StyleColorsDark();
+
+    ImGuiStyle &style = ImGui::GetStyle();
+    ImVec4 *colors = style.Colors;
+
+    // Base grays
+    ImVec4 gray = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
+    ImVec4 grayHover = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
+    ImVec4 grayActive = ImVec4(0.25f, 0.25f, 0.30f, 1.00f);
+    ImVec4 lightGray = ImVec4(0.35f, 0.35f, 0.37f, 1.00f);
+    ImVec4 brightGray = ImVec4(0.48f, 0.48f, 0.55f, 1.00f);
+
+    ImVec4 textColor = ImVec4(0.6f, 0.68f, 1.0f, 1.0f);
+
+    // Window
+    colors[ImGuiCol_TitleBg] = lightGray;
+    colors[ImGuiCol_TitleBgActive] = lightGray;
+    colors[ImGuiCol_TitleBgCollapsed] = lightGray;
+
+    // Frame
+    colors[ImGuiCol_FrameBg] = gray;
+    colors[ImGuiCol_FrameBgHovered] = grayHover;
+    colors[ImGuiCol_FrameBgActive] = grayActive;
+
+    // Buttons
+    colors[ImGuiCol_Button] = gray;
+    colors[ImGuiCol_ButtonHovered] = grayHover;
+    colors[ImGuiCol_ButtonActive] = brightGray;
+
+    // Slider grabs and checkboxes
+    colors[ImGuiCol_SliderGrab] = lightGray;
+    colors[ImGuiCol_SliderGrabActive] = brightGray;
+    colors[ImGuiCol_CheckMark] = brightGray;
+
+    // Resize grip (bottom-right corner)
+    colors[ImGuiCol_ResizeGrip] = gray;
+    colors[ImGuiCol_ResizeGripHovered] = grayHover;
+    colors[ImGuiCol_ResizeGripActive] = grayActive;
+
+    // Scrollbars
+    colors[ImGuiCol_ScrollbarBg] = gray;
+    colors[ImGuiCol_ScrollbarGrab] = gray;
+    colors[ImGuiCol_ScrollbarGrabHovered] = grayHover;
+    colors[ImGuiCol_ScrollbarGrabActive] = grayActive;
+
+    colors[ImGuiCol_Border] = gray;
+
     // Do not let ImGui install GLFW callbacks; we install our own and forward events.
     ImGui_ImplGlfw_InitForOpenGL(win, false);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    bool autoRegenerate = false;
+    bool autoErode = false;
+
+    std::chrono::duration<double, std::milli> regenDuration = std::chrono::duration<double, std::milli>(0.0);
+    std::chrono::duration<double, std::milli> erosionDuration = std::chrono::duration<double, std::milli>(0.0);
+
     MapParams mparams;
     ErosionParams eparams;
     PerlinParams pparams;
+
+    auto start = std::chrono::high_resolution_clock::now();
     // std::vector<float> heightmap = Cpu::generateHeightMap(mparams.size, pparams);
     //  generate heightmap on GPU instead of CPU
     std::vector<float> heightmap((size_t)mparams.size * (size_t)mparams.size);
     // Cpu::generateHeightMap would return a vector; replace with GPU call
     Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
+
+    regenDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
 
     // apply hydraulic erosion
     // Erosion::applyHydraulicErosion(heightmap, eparams);
@@ -313,14 +399,71 @@ int main()
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-
         ImGui::Begin("Control Panel");
+
+        /*         if (ImGui::RadioButton("Option 1", selected == 0))
+                    selected = 0;
+                if (ImGui::RadioButton("Option 2", selected == 1))
+                    selected = 1;
+                if (ImGui::RadioButton("Option 3", selected == 2))
+                    selected = 2; */
+
+        if (ImGui::BeginTable("Actions", 2, ImGuiTableFlags_SizingStretchSame))
+        {
+
+            ImGui::TableNextColumn();
+            ImGui::Text("Heightmap");
+            ImGui::Spacing();
+            ImGui::Checkbox("Continuously Generate", &autoRegenerate);
+            if (ImGui::Button("Regenerate Heightmap") || autoRegenerate)
+            {
+                auto start = std::chrono::high_resolution_clock::now();
+
+                // heightmap = Cpu::generateHeightMap(mparams.size, pparams);
+                heightmap.resize((size_t)mparams.size * (size_t)mparams.size);
+                Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
+                mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
+
+                regenDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+            }
+
+            ImGui::Text("Regen Duration:");
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+            ImGui::Text("%d ms", static_cast<int>(regenDuration.count()));
+            ImGui::PopStyleColor();
+
+            ImGui::TableNextColumn();
+            ImGui::Text("Erosion");
+            ImGui::Spacing();
+            ImGui::Checkbox("Continuously Erode", &autoErode);
+            if (ImGui::Button("Apply Erosion") || autoErode)
+            {
+                auto start = std::chrono::high_resolution_clock::now();
+
+                Cpu::applyHydraulicErosion(heightmap, eparams, mparams.size);
+                mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
+
+                erosionDuration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
+            }
+
+            ImGui::Text("Erode Duration:");
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+            ImGui::Text("%d ms", static_cast<int>(erosionDuration.count()));
+            ImGui::PopStyleColor();
+            ImGui::EndTable();
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
         ImGui::Text("Map Parameters");
         ImGui::SliderInt("Map Size", &mparams.size, 32, 1024);
         ImGui::SliderFloat("Scale", &mparams.scale, 1.0f, 10.0f);
         ImGui::SliderFloat("Elevation Scale", &mparams.elevationScale, 0.1f, 50.0f);
         ImGui::Separator();
 
+        ImGui::Spacing();
         ImGui::Text("Perlin Noise");
         ImGui::SliderInt("Octaves", &pparams.numOctaves, 1, 12);
         ImGui::SliderFloat("Persistence", &pparams.persistence, 0.0f, 1.0f);
@@ -328,6 +471,7 @@ int main()
         ImGui::SliderFloat("Initial Scale", &pparams.initialScale, 1.0f, 2000.0f);
         ImGui::Separator();
 
+        ImGui::Spacing();
         ImGui::Text("Map / Erosion Parameters");
         ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 1000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
@@ -340,23 +484,17 @@ int main()
         ImGui::SliderFloat("Gravity", &eparams.gravity, 0.0f, 20.0f);
         ImGui::Separator();
 
-        if (ImGui::Button("Regenerate Heightmap"))
-        {
-            // regenerate on GPU
-            // heightmap = Cpu::generateHeightMap(mparams.size, pparams);
-            heightmap.resize((size_t)mparams.size * (size_t)mparams.size);
-            Gpu::generateHeightmap(heightmap.data(), mparams.size, pparams);
-            mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
-        }
+        ImGui::Text("Mesh Info: Vertices:");
         ImGui::SameLine();
-        if (ImGui::Button("Apply Erosion"))
-        {
-            Cpu::applyHydraulicErosion(heightmap, eparams, mparams.size);
-            mesh = buildAndUploadGrid(vbo, nbo, ebo, heightmap, mparams);
-        }
-
-        ImGui::Separator();
-        ImGui::Text("Mesh info: %d vertices, %d indices", (int)(mesh.vertices.size() / 3), (int)mesh.indices.size());
+        ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+        ImGui::Text("%d", (int)(mesh.vertices.size() / 3));
+        ImGui::SameLine();
+        ImGui::PopStyleColor();
+        ImGui::Text("Indices:");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, textColor);
+        ImGui::Text("%d", (int)mesh.indices.size());
+        ImGui::PopStyleColor();
         ImGui::End();
 
         ImGui::Render();
