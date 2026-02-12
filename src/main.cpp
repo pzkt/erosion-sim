@@ -21,7 +21,7 @@
 static double lastX = 0.0, lastY = 0.0;
 static bool leftDown = false, rightDown = false;
 static camParams cam;
-static ComputeMode computeMode = ComputeMode::GPU3;
+static ComputeMode computeMode = ComputeMode::GPU2;
 
 static void updateCursorState(GLFWwindow *win)
 {
@@ -509,7 +509,7 @@ int main()
 
         ImGui::Spacing();
         ImGui::Text("Erosion Parameters");
-        ImGui::SliderInt("Num Drops", &eparams.numDrops, 0, 10000000);
+        ImGui::SliderInt("Num Drops", &eparams.numDrops, 1, 10000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
         ImGui::SliderFloat("Inertia", &eparams.inertia, 0.0f, 1.0f);
         ImGui::SliderFloat("Sediment Capacity Factor", &eparams.sedimentCapacityFactor, 0.0f, 10.0f);

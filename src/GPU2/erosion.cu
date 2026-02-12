@@ -24,8 +24,6 @@ int Gpu2::rngStateCount = 0;
 float *Gpu2::h_pinnedMap = nullptr;
 size_t Gpu2::h_pinnedBytes = 0;
 
-cudaStream_t Gpu2::stream = nullptr;
-
 static void generateBrush(int radius, int mapSize, std::vector<int> &offsets, std::vector<float> &weights)
 {
     offsets.clear();
@@ -50,12 +48,6 @@ static void generateBrush(int radius, int mapSize, std::vector<int> &offsets, st
 
     for (float &w : weights)
         w /= sum;
-}
-
-void Gpu2::ensureStream()
-{
-    if (!stream)
-        CHECK_CUDA(cudaStreamCreate(&stream));
 }
 
 void Gpu2::uploadBrush(const ErosionParams &p, int mapSize)
@@ -83,12 +75,12 @@ void Gpu2::uploadBrush(const ErosionParams &p, int mapSize)
         CHECK_CUDA(cudaMemcpyAsync(
             d_brushIndices, offsets.data(),
             brushLength * sizeof(int),
-            cudaMemcpyHostToDevice, stream));
+            cudaMemcpyHostToDevice));
 
         CHECK_CUDA(cudaMemcpyAsync(
             d_brushWeights, weights.data(),
             brushLength * sizeof(float),
-            cudaMemcpyHostToDevice, stream));
+            cudaMemcpyHostToDevice));
     }
 }
 
@@ -99,18 +91,10 @@ static __device__ __forceinline__ int globalThreadId()
 
 static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float posX, float posY, float &outHeight, float &outGradX, float &outGradY)
 {
-    int nodeX = (int)posX;
-    int nodeY = (int)posY;
 
     // clamp to valid range so we can safely sample neighbours (nodeX/nodeY up to mapSize-2)
-    if (nodeX < 0)
-        nodeX = 0;
-    if (nodeY < 0)
-        nodeY = 0;
-    if (nodeX > mapSize - 2)
-        nodeX = mapSize - 2;
-    if (nodeY > mapSize - 2)
-        nodeY = mapSize - 2;
+    int nodeX = max(0, min((int)posX, mapSize - 2));
+    int nodeY = max(0, min((int)posY, mapSize - 2));
 
     int dropletIndex = nodeY * mapSize + nodeX;
 
@@ -139,50 +123,28 @@ static __global__ void initRNG(curandState *states, unsigned int seed, int numSt
         curand_init(seed, id, 0, &states[id]);
 }
 
-static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int dropsPerThread, int tilesPerRow)
+static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int tilesPerRow)
 {
     int id = globalThreadId();
-    int totalThreads = gridDim.x * blockDim.x;
-    if (id >= totalThreads)
-        return;
-
     curandState localState = states[id];
 
     // tile this block works on (tilesPerRow x tilesPerRow grid)
-
     int tileX = blockIdx.x % tilesPerRow;
     int tileY = blockIdx.x / tilesPerRow;
 
-    int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow; // ceil div
+    int tileSize = mapSize / tilesPerRow; // ceil div
     int tileMinX = tileX * tileSize;
     int tileMinY = tileY * tileSize;
 
-    // compute global drop index range this thread should handle
-    int threadStartDrop = id * dropsPerThread;
-
-    for (int d = 0; d < dropsPerThread; d++)
+    for (int d = 0; d < DROPS_PER_THREAD; d++)
     {
-        int globalDropIdx = threadStartDrop + d;
-        if (globalDropIdx >= numDrops)
-            break;
+        int safeMax = mapSize - 2;
 
-        // pick a start within the block's tile to improve locality
-        float rx = curand_uniform(&localState);
-        float ry = curand_uniform(&localState);
+        int tileMaxX = min(tileMinX + tileSize, safeMax);
+        int tileMaxY = min(tileMinY + tileSize, safeMax);
 
-        int tileMaxX = tileMinX + tileSize;
-        int tileMaxY = tileMinY + tileSize;
-        if (tileMaxX > mapSize - 1)
-            tileMaxX = mapSize - 1;
-        if (tileMaxY > mapSize - 1)
-            tileMaxY = mapSize - 1;
-        // sample uniformly inside the tile bounds (may be degenerate for very small tiles)
-        float posX = tileMinX + rx * float(tileMaxX - tileMinX);
-        float posY = tileMinY + ry * float(tileMaxY - tileMinY);
-
-        // clamp to safe bilinear sampling region
-        posX = fminf(posX, mapSize - 2.0001f);
-        posY = fminf(posY, mapSize - 2.0001f);
+        float posX = tileMinX + curand_uniform(&localState) * (tileMaxX - tileMinX);
+        float posY = tileMinY + curand_uniform(&localState) * (tileMaxY - tileMinY);
 
         float dirX = 0.0f, dirY = 0.0f;
         float speed = p.startSpeed;
@@ -230,9 +192,9 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
                 int safeX = nodeX;
                 int safeY = nodeY;
                 if (safeX >= mapSize - 1)
-                    safeX = mapSize - 2;
+                    safeX = mapSize - 1;
                 if (safeY >= mapSize - 1)
-                    safeY = mapSize - 2;
+                    safeY = mapSize - 1;
 
                 int safeIndex = safeY * mapSize + safeX;
                 float amountToDeposit = (deltaHeight > 0.0f) ? fminf(deltaHeight, sediment) : (sediment - sedimentCapacity) * p.depositSpeed;
@@ -275,41 +237,41 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
 
 void Gpu2::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionParams &p, int mapSize)
 {
-    ensureStream();
-
     size_t bytes = mapSize * mapSize * sizeof(float);
     ensurePinnedHost(bytes);
     ensureDeviceMap(bytes);
 
     std::memcpy(h_pinnedMap, heightmap.data(), bytes);
 
-    CHECK_CUDA(cudaMemcpyAsync(d_map, h_pinnedMap, bytes, cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_map, h_pinnedMap, bytes, cudaMemcpyHostToDevice));
 
     uploadBrush(p, mapSize);
 
-    int dropsPerThread = DROPS_PER_THREAD;
-    int threadsNeeded = (p.numDrops + dropsPerThread - 1) / dropsPerThread;
+    int threadsNeeded = ceil(float(p.numDrops) / DROPS_PER_THREAD);
+    int blocks = ceil(float(threadsNeeded) / THREADS);
 
-    int blocks = (threadsNeeded + THREADS - 1) / THREADS;
+    int tilesPerRow = ceil(sqrt(float(blocks)));
+    blocks = tilesPerRow * tilesPerRow;
+
     int totalThreads = blocks * THREADS;
 
     ensureRNG(totalThreads);
 
-    int tilesPerRow = (int)ceilf(sqrtf((float)blocks));
+    // std::cout << "tiles per row: " << tilesPerRow << std::endl;
+    // std::cout << "blocks: " << blocks << ", threads: " << totalThreads << std::endl;
 
-    erosionKernel<<<blocks, THREADS, 0, stream>>>(
+    erosionKernel<<<blocks, THREADS>>>(
         d_map, p, mapSize,
         d_rngStates,
         d_brushIndices,
         d_brushWeights,
         brushLength,
         p.numDrops,
-        dropsPerThread,
         tilesPerRow);
 
-    CHECK_CUDA(cudaMemcpyAsync(h_pinnedMap, d_map, bytes, cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaMemcpyAsync(h_pinnedMap, d_map, bytes, cudaMemcpyDeviceToHost));
 
-    CHECK_CUDA(cudaStreamSynchronize(stream));
+    CHECK_CUDA(cudaDeviceSynchronize());
 
     std::memcpy(heightmap.data(), h_pinnedMap, bytes);
 }
@@ -350,7 +312,7 @@ void Gpu2::ensureRNG(int totalThreads)
                               rngStateCount * sizeof(curandState)));
 
         int blocks = (rngStateCount + THREADS - 1) / THREADS;
-        initRNG<<<blocks, THREADS, 0, stream>>>(
+        initRNG<<<blocks, THREADS, 0>>>(
             d_rngStates, (unsigned)time(nullptr), rngStateCount);
     }
 }
@@ -367,13 +329,10 @@ void Gpu2::shutdown()
         cudaFree(d_rngStates);
     if (h_pinnedMap)
         cudaFreeHost(h_pinnedMap);
-    if (stream)
-        cudaStreamDestroy(stream);
 
     d_map = nullptr;
     d_brushIndices = nullptr;
     d_brushWeights = nullptr;
     d_rngStates = nullptr;
     h_pinnedMap = nullptr;
-    stream = nullptr;
 }

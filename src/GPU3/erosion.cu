@@ -97,95 +97,67 @@ static __device__ __forceinline__ int globalThreadId()
     return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
-static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float posX, float posY, float &outHeight, float &outGradX, float &outGradY, float *s_tile, int tileMinX, int tileMinY, int tileWidth, bool useShared)
+__device__ __forceinline__ int ceilDiv(int a, int b)
 {
-    int nodeX = (int)posX;
-    int nodeY = (int)posY;
+    return (a + b - 1) / b;
+}
 
-    // clamp to valid range so we can safely sample neighbours (nodeX/nodeY up to mapSize-2)
-    if (nodeX < 0)
-        nodeX = 0;
-    if (nodeY < 0)
-        nodeY = 0;
-    if (nodeX > mapSize - 2)
-        nodeX = mapSize - 2;
-    if (nodeY > mapSize - 2)
-        nodeY = mapSize - 2;
+__device__ __forceinline__ bool inTile(int x, int y, int tileMinX, int tileMinY, int tileWidth, int tileHeight)
+{
+    return x >= tileMinX && x < tileMinX + tileWidth && y >= tileMinY && y < tileMinY + tileHeight;
+}
 
-    int dropletIndex = nodeY * mapSize + nodeX;
-
-    // compute droplet's offset inside the cell (0-1)
-    float x = posX - float(nodeX);
-    float y = posY - float(nodeY);
-
-    // compute height and gradient using bilinear interpolation of surrounding heights
-    // fetch heights and include shared-tile contributions when available
-    int idxNW = dropletIndex;
-    float heightNW = heightmap[idxNW];
-    if (useShared)
+__device__ __forceinline__ void addHeight(float *d_map, float *s_tile, int mapSize, int x, int y, float value, int tileMinX, int tileMinY, int tileWidth, int tileHeight)
+{
+    if (inTile(x, y, tileMinX, tileMinY, tileWidth, tileHeight))
     {
-        int iy = idxNW / mapSize;
-        int ix = idxNW % mapSize;
-        if (ix >= tileMinX && ix < tileMinX + tileWidth && iy >= tileMinY && iy < tileMinY + tileWidth)
+        int localIdx = (y - tileMinY) * tileWidth + (x - tileMinX);
+        atomicAdd(&s_tile[localIdx], value);
+    }
+    else
+    {
+        atomicAdd(&d_map[y * mapSize + x], value);
+    }
+}
+
+static __device__ void calculateHeightAndGradient(float *heightmap, int mapSize, float posX, float posY, float &outHeight, float &outGradX, float &outGradY, float *s_tile, int tileMinX, int tileMinY, int tileWidth)
+{
+    int nodeX = max(0, min((int)posX, mapSize - 2));
+    int nodeY = max(0, min((int)posY, mapSize - 2));
+
+    float x = posX - nodeX;
+    float y = posY - nodeY;
+
+    int idxNW = nodeY * mapSize + nodeX;
+    int idxNE = idxNW + 1;
+    int idxSW = idxNW + mapSize;
+    int idxSE = idxSW + 1;
+
+    auto sample = [&](int ix, int iy, int idx)
+    {
+        float h = heightmap[idx];
+
+        if (inTile(ix, iy, tileMinX, tileMinY, tileWidth, tileWidth))
         {
             int localX = ix - tileMinX;
             int localY = iy - tileMinY;
-            int localIdx = localY * tileWidth + localX;
-            heightNW += s_tile[localIdx];
+            h += s_tile[localY * tileWidth + localX];
         }
-    }
 
-    int idxNE = dropletIndex + 1;
-    float heightNE = heightmap[idxNE];
-    if (useShared)
-    {
-        int iy = idxNE / mapSize;
-        int ix = idxNE % mapSize;
-        if (ix >= tileMinX && ix < tileMinX + tileWidth && iy >= tileMinY && iy < tileMinY + tileWidth)
-        {
-            int localX = ix - tileMinX;
-            int localY = iy - tileMinY;
-            int localIdx = localY * tileWidth + localX;
-            heightNE += s_tile[localIdx];
-        }
-    }
+        return h;
+    };
 
-    int idxSW = dropletIndex + mapSize;
-    float heightSW = heightmap[idxSW];
-    if (useShared)
-    {
-        int iy = idxSW / mapSize;
-        int ix = idxSW % mapSize;
-        if (ix >= tileMinX && ix < tileMinX + tileWidth && iy >= tileMinY && iy < tileMinY + tileWidth)
-        {
-            int localX = ix - tileMinX;
-            int localY = iy - tileMinY;
-            int localIdx = localY * tileWidth + localX;
-            heightSW += s_tile[localIdx];
-        }
-    }
+    float heightNW = sample(nodeX, nodeY, idxNW);
+    float heightNE = sample(nodeX + 1, nodeY, idxNE);
+    float heightSW = sample(nodeX, nodeY + 1, idxSW);
+    float heightSE = sample(nodeX + 1, nodeY + 1, idxSE);
 
-    int idxSE = dropletIndex + mapSize + 1;
-    float heightSE = heightmap[idxSE];
-    if (useShared)
-    {
-        int iy = idxSE / mapSize;
-        int ix = idxSE % mapSize;
-        if (ix >= tileMinX && ix < tileMinX + tileWidth && iy >= tileMinY && iy < tileMinY + tileWidth)
-        {
-            int localX = ix - tileMinX;
-            int localY = iy - tileMinY;
-            int localIdx = localY * tileWidth + localX;
-            heightSE += s_tile[localIdx];
-        }
-    }
+    float oneMinusX = 1.0f - x;
+    float oneMinusY = 1.0f - y;
 
-    // calculate droplet's height
-    outHeight = heightNW * (1 - x) * (1 - y) + heightNE * x * (1 - y) + heightSW * (1 - x) * y + heightSE * x * y;
-
-    // compute gradient
-    outGradX = (heightNE - heightNW) * (1 - y) + (heightSE - heightSW) * y;
-    outGradY = (heightSW - heightNW) * (1 - x) + (heightSE - heightNE) * x;
+    outHeight = heightNW * oneMinusX * oneMinusY + heightNE * x * oneMinusY + heightSW * oneMinusX * y + heightSE * x * y;
+    outGradX = (heightNE - heightNW) * oneMinusY + (heightSE - heightSW) * y;
+    outGradY = (heightSW - heightNW) * oneMinusX + (heightSE - heightNE) * x;
 }
 
 static __global__ void initRNG(curandState *states, unsigned int seed, int numStates)
@@ -195,50 +167,37 @@ static __global__ void initRNG(curandState *states, unsigned int seed, int numSt
         curand_init(seed, id, 0, &states[id]);
 }
 
-static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int dropsPerThread, int tilesPerRow, bool useShared)
+static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize, curandState *states, const int *brushIndexOffsets, const float *brushWeights, int brushLength, int numDrops, int tilesPerRow)
 {
     int id = globalThreadId();
-    int totalThreads = gridDim.x * blockDim.x;
-    if (id >= totalThreads)
-        return;
 
     curandState localState = states[id];
 
-    // tile this block works on (tilesPerRow x tilesPerRow grid)
+    // Tile setup
+
     int tileX = blockIdx.x % tilesPerRow;
     int tileY = blockIdx.x / tilesPerRow;
 
-    int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow; // ceil div
+    int tileSize = ceilDiv(mapSize - 1, tilesPerRow);
+
     int tileMinX = tileX * tileSize;
     int tileMinY = tileY * tileSize;
-    int tileWidth = tileSize + 1;
-    int tileHeight = tileSize + 1;
-    if (tileMinX + tileWidth > mapSize)
-        tileWidth = mapSize - tileMinX;
-    if (tileMinY + tileHeight > mapSize)
-        tileHeight = mapSize - tileMinY;
+
+    int tileWidth = min(tileSize + 1, mapSize - tileMinX);
+    int tileHeight = min(tileSize + 1, mapSize - tileMinY);
+
     int tileArea = tileWidth * tileHeight;
 
-    extern __shared__ float s_tile[]; // only valid when launch provides shared bytes
-    // initialize shared tile buffer if requested and available
-    if (useShared)
+    extern __shared__ float s_tile[];
+
+    // Zero shared tile
+    for (int i = threadIdx.x; i < tileArea; i += blockDim.x)
+        s_tile[i] = 0.0f;
+
+    __syncthreads();
+
+    for (int d = 0; d < DROPS_PER_THREAD; d++)
     {
-        // zero initialize in parallel using threads of the block
-        for (int i = threadIdx.x; i < tileArea; i += blockDim.x)
-            s_tile[i] = 0.0f;
-        __syncthreads();
-    }
-
-    // compute global drop index range this thread should handle
-    int threadStartDrop = id * dropsPerThread;
-
-    for (int d = 0; d < dropsPerThread; d++)
-    {
-        int globalDropIdx = threadStartDrop + d;
-        if (globalDropIdx >= numDrops)
-            break;
-
-        // pick a start within the block's tile to improve locality
         float rx = curand_uniform(&localState);
         float ry = curand_uniform(&localState);
 
@@ -248,7 +207,6 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
         float posX = tileMinX + rx * (tileMaxX - tileMinX);
         float posY = tileMinY + ry * (tileMaxY - tileMinY);
 
-        // clamp to safe bilinear sampling region
         posX = fminf(posX, mapSize - 2.0001f);
         posY = fminf(posY, mapSize - 2.0001f);
 
@@ -261,188 +219,123 @@ static __global__ void erosionKernel(float *d_map, ErosionParams p, int mapSize,
         {
             int nodeX = (int)posX;
             int nodeY = (int)posY;
-            int dropletIndex = nodeY * mapSize + nodeX;
 
-            // droplet offset in cell
-            float cellOffsetX = posX - float(nodeX);
-            float cellOffsetY = posY - float(nodeY);
+            float cellOffsetX = posX - nodeX;
+            float cellOffsetY = posY - nodeY;
 
-            // compute height & gradient (include shared-tile contributions when enabled)
             float height, gradX, gradY;
-            calculateHeightAndGradient(d_map, mapSize, posX, posY, height, gradX, gradY, s_tile, tileMinX, tileMinY, tileWidth, useShared);
+            calculateHeightAndGradient(d_map, mapSize, posX, posY, height, gradX, gradY, s_tile, tileMinX, tileMinY, tileWidth);
 
-            // update direction
+            // Update direction
             dirX = dirX * p.inertia - gradX * (1.0f - p.inertia);
             dirY = dirY * p.inertia - gradY * (1.0f - p.inertia);
-            float len = fmaxf(0.01f, sqrtf(dirX * dirX + dirY * dirY));
-            dirX /= len;
-            dirY /= len;
+
+            float invLen = rsqrtf(dirX * dirX + dirY * dirY + 1e-6f);
+            dirX *= invLen;
+            dirY *= invLen;
+
             posX += dirX;
             posY += dirY;
 
-            // stop if outside safe bounds for bilinear interpolation
-            if (posX < 0.0f || posX >= mapSize - 1 || posY < 0.0f || posY >= mapSize - 1)
+            if (!inTile((int)posX, (int)posY, tileMinX, tileMinY, tileWidth, tileHeight))
                 break;
 
-            // compute new height & delta (include shared-tile contributions when enabled)
             float newHeight, newGradX, newGradY;
-            calculateHeightAndGradient(d_map, mapSize, posX, posY, newHeight, newGradX, newGradY, s_tile, tileMinX, tileMinY, tileWidth, useShared);
+            calculateHeightAndGradient(d_map, mapSize, posX, posY, newHeight, newGradX, newGradY, s_tile, tileMinX, tileMinY, tileWidth);
             float deltaHeight = newHeight - height;
-
-            // sediment capacity
             float sedimentCapacity = fmaxf(-deltaHeight * speed * water * p.sedimentCapacityFactor, p.minSedimentCapacity);
 
+            // deposit
             if (sediment > sedimentCapacity || deltaHeight > 0.0f)
             {
-                // Deposit sediment safely
-                int safeX = min(nodeX, mapSize - 2);
-                int safeY = min(nodeY, mapSize - 2);
-
-                int safeIndex = safeY * mapSize + safeX;
                 float amountToDeposit = (deltaHeight > 0.0f) ? fminf(deltaHeight, sediment) : (sediment - sedimentCapacity) * p.depositSpeed;
                 sediment -= amountToDeposit;
 
-                // four bilinear contributions
-                int gx0 = safeIndex % mapSize;
-                int gy0 = safeIndex / mapSize;
+                int gx0 = nodeX;
+                int gy0 = nodeY;
                 int gx1 = gx0 + 1;
                 int gy1 = gy0 + 1;
 
-                float w00 = amountToDeposit * (1 - cellOffsetX) * (1 - cellOffsetY);
-                float w10 = amountToDeposit * cellOffsetX * (1 - cellOffsetY);
-                float w01 = amountToDeposit * (1 - cellOffsetX) * cellOffsetY;
-                float w11 = amountToDeposit * cellOffsetX * cellOffsetY;
+                float w[2][2] =
+                    {
+                        {amountToDeposit * (1 - cellOffsetX) * (1 - cellOffsetY),
+                         amountToDeposit * cellOffsetX * (1 - cellOffsetY)},
 
-                // deposit to either shared tile or global map per contribution
-                if (w00 != 0.0f)
+                        {amountToDeposit * (1 - cellOffsetX) * cellOffsetY,
+                         amountToDeposit * cellOffsetX * cellOffsetY}};
+
+                int gx[2] = {gx0, gx1};
+                int gy[2] = {gy0, gy1};
+
+                for (int iy = 0; iy < 2; iy++)
                 {
-                    int gx = gx0;
-                    int gy = gy0;
-                    if (useShared && gx >= tileMinX && gx < tileMinX + tileWidth && gy >= tileMinY && gy < tileMinY + tileHeight)
+                    for (int ix = 0; ix < 2; ix++)
                     {
-                        int localIdx = (gy - tileMinY) * tileWidth + (gx - tileMinX);
-                        atomicAdd(&s_tile[localIdx], w00);
-                    }
-                    else
-                    {
-                        atomicAdd(&d_map[gy * mapSize + gx], w00);
-                    }
-                }
-                if (w10 != 0.0f && gx1 < mapSize)
-                {
-                    int gx = gx1;
-                    int gy = gy0;
-                    if (useShared && gx >= tileMinX && gx < tileMinX + tileWidth && gy >= tileMinY && gy < tileMinY + tileHeight)
-                    {
-                        int localIdx = (gy - tileMinY) * tileWidth + (gx - tileMinX);
-                        atomicAdd(&s_tile[localIdx], w10);
-                    }
-                    else
-                    {
-                        atomicAdd(&d_map[gy * mapSize + gx], w10);
-                    }
-                }
-                if (w01 != 0.0f && gy1 < mapSize)
-                {
-                    int gx = gx0;
-                    int gy = gy1;
-                    if (useShared && gx >= tileMinX && gx < tileMinX + tileWidth && gy >= tileMinY && gy < tileMinY + tileHeight)
-                    {
-                        int localIdx = (gy - tileMinY) * tileWidth + (gx - tileMinX);
-                        atomicAdd(&s_tile[localIdx], w01);
-                    }
-                    else
-                    {
-                        atomicAdd(&d_map[gy * mapSize + gx], w01);
-                    }
-                }
-                if (w11 != 0.0f && gx1 < mapSize && gy1 < mapSize)
-                {
-                    int gx = gx1;
-                    int gy = gy1;
-                    if (useShared && gx >= tileMinX && gx < tileMinX + tileWidth && gy >= tileMinY && gy < tileMinY + tileHeight)
-                    {
-                        int localIdx = (gy - tileMinY) * tileWidth + (gx - tileMinX);
-                        atomicAdd(&s_tile[localIdx], w11);
-                    }
-                    else
-                    {
-                        atomicAdd(&d_map[gy * mapSize + gx], w11);
+                        float weight = w[iy][ix];
+                        if (weight == 0.0f)
+                            continue;
+
+                        int x = gx[ix];
+                        int y = gy[iy];
+
+                        if (x >= mapSize || y >= mapSize)
+                            continue;
+
+                        addHeight(d_map, s_tile, mapSize, x, y, weight, tileMinX, tileMinY, tileWidth, tileHeight);
                     }
                 }
             }
+
+            // erosion
             else
             {
-                // erosion using brush safely: use linear index offsets to avoid negative-division issues
                 float amountToErode = fminf((sedimentCapacity - sediment) * p.erodeSpeed, -deltaHeight);
+                int dropletIndex = nodeY * mapSize + nodeX;
+
                 for (int bi = 0; bi < brushLength; bi++)
                 {
-                    int offset = brushIndexOffsets[bi];
-                    int erodeIndex = dropletIndex + offset;
-
-                    // bounds check on linear index
+                    int erodeIndex = dropletIndex + brushIndexOffsets[bi];
                     if (erodeIndex < 0 || erodeIndex >= mapSize * mapSize)
                         continue;
 
-                    float weightedErodeAmount = amountToErode * brushWeights[bi];
-
-                    int ey = erodeIndex / mapSize;
+                    float weightedAmount = amountToErode * brushWeights[bi];
                     int ex = erodeIndex % mapSize;
-
-                    // read current value including shared contribution if present
+                    int ey = erodeIndex / mapSize;
                     float curVal = d_map[erodeIndex];
-                    if (useShared && ex >= tileMinX && ex < tileMinX + tileWidth && ey >= tileMinY && ey < tileMinY + tileHeight)
+
+                    if (inTile(ex, ey, tileMinX, tileMinY, tileWidth, tileHeight))
                     {
-                        int localX = ex - tileMinX;
-                        int localY = ey - tileMinY;
-                        int localIdx = localY * tileWidth + localX;
+                        int localIdx = (ey - tileMinY) * tileWidth + (ex - tileMinX);
                         curVal += s_tile[localIdx];
                     }
 
-                    float deltaSediment = fminf(curVal, weightedErodeAmount);
-
-                    if (useShared && ex >= tileMinX && ex < tileMinX + tileWidth && ey >= tileMinY && ey < tileMinY + tileHeight)
-                    {
-                        int localX = ex - tileMinX;
-                        int localY = ey - tileMinY;
-                        int localIdx = localY * tileWidth + localX;
-                        atomicAdd(&s_tile[localIdx], -deltaSediment);
-                    }
-                    else
-                    {
-                        atomicAdd(&d_map[erodeIndex], -deltaSediment);
-                    }
-
+                    float deltaSediment = fminf(curVal, weightedAmount);
+                    addHeight(d_map, s_tile, mapSize, ex, ey, -deltaSediment, tileMinX, tileMinY, tileWidth, tileHeight);
                     sediment += deltaSediment;
                 }
             }
-
             speed = sqrtf(fmaxf(0.0f, speed * speed + deltaHeight * p.gravity));
             water *= (1.0f - p.evaporateSpeed);
         }
     }
-
-    // save RNG state
     states[id] = localState;
 
-    // write back shared tile into global map (only if we used shared accumulation)
-    if (useShared)
+    // Write back shared tile
+    __syncthreads();
+
+    for (int i = threadIdx.x; i < tileArea; i += blockDim.x)
     {
-        __syncthreads();
-        // let threads write back portions of the tile
-        for (int i = threadIdx.x; i < tileArea; i += blockDim.x)
-        {
-            float v = s_tile[i];
-            if (v != 0.0f)
-            {
-                int lx = i % tileWidth;
-                int ly = i / tileWidth;
-                int gx = tileMinX + lx;
-                int gy = tileMinY + ly;
-                int gidx = gy * mapSize + gx;
-                atomicAdd(&d_map[gidx], v);
-            }
-        }
+        float v = s_tile[i];
+        if (v == 0.0f)
+            continue;
+
+        int lx = i % tileWidth;
+        int ly = i / tileWidth;
+
+        int gx = tileMinX + lx;
+        int gy = tileMinY + ly;
+
+        atomicAdd(&d_map[gy * mapSize + gx], v);
     }
 }
 
@@ -460,29 +353,21 @@ void Gpu3::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPar
 
     uploadBrush(p, mapSize);
 
-    int dropsPerThread = DROPS_PER_THREAD;
-    int threadsNeeded = (p.numDrops + dropsPerThread - 1) / dropsPerThread;
+    int threadsNeeded = ceil(float(p.numDrops) / DROPS_PER_THREAD);
+    int blocks = ceil(float(threadsNeeded) / THREADS);
 
-    int blocks = (threadsNeeded + THREADS - 1) / THREADS;
+    int tilesPerRow = ceil(sqrt(float(blocks)));
+    blocks = tilesPerRow * tilesPerRow;
+
     int totalThreads = blocks * THREADS;
 
     ensureRNG(totalThreads);
 
-    int tilesPerRow = (int)ceilf(sqrtf((float)blocks));
-
-    // decide whether to use per-block shared-memory tile accumulation
     int tileSize = (mapSize - 1 + tilesPerRow - 1) / tilesPerRow;
     int maxTileWidth = tileSize + 1;
     int maxTileHeight = tileSize + 1;
     int maxTileArea = maxTileWidth * maxTileHeight;
-    const int MAX_SHARED_BYTES = 48 * 1024;
-    size_t sharedBytes = 0;
-    bool useShared = false;
-    if ((size_t)maxTileArea * sizeof(float) <= (size_t)MAX_SHARED_BYTES)
-    {
-        useShared = true;
-        sharedBytes = (size_t)maxTileArea * sizeof(float);
-    }
+    size_t sharedBytes = (size_t)maxTileArea * sizeof(float);
 
     erosionKernel<<<blocks, THREADS, (unsigned)sharedBytes, stream>>>(
         d_map, p, mapSize,
@@ -491,14 +376,10 @@ void Gpu3::applyHydraulicErosion(std::vector<float> &heightmap, const ErosionPar
         d_brushWeights,
         brushLength,
         p.numDrops,
-        dropsPerThread,
-        tilesPerRow,
-        useShared);
+        tilesPerRow);
 
     CHECK_CUDA(cudaMemcpyAsync(h_pinnedMap, d_map, bytes, cudaMemcpyDeviceToHost, stream));
-
     CHECK_CUDA(cudaStreamSynchronize(stream));
-
     std::memcpy(heightmap.data(), h_pinnedMap, bytes);
 }
 
