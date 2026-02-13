@@ -26,6 +26,7 @@ docker build -t erosion-sim .
 xhost +local:docker
 docker run --gpus all -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix erosion-sim
 ```
+Building and running this on a vast.ai GPU is possible, but requires the instalation of some packages (see line 4 to 17 in the dockerfile)
 
 ## Structure
 
