@@ -200,6 +200,9 @@ static void applyHydraulicErosion(std::vector<float> &heightmap, int size, Erosi
     case ComputeMode::GPU3:
         Gpu3::applyHydraulicErosion(heightmap, e, size);
         break;
+    case ComputeMode::GpuGB:
+        GpuGB::applyHydraulicErosion(heightmap, e, size);
+        break;
     }
 }
 
@@ -225,6 +228,10 @@ static void generateHeightmap(std::vector<float> &heightmap, int size, PerlinPar
     case ComputeMode::GPU3:
         heightmap.resize((size_t)size * (size_t)size);
         Gpu3::generateHeightmap(heightmap.data(), size, p);
+        break;
+    case ComputeMode::GpuGB:
+        heightmap.resize((size_t)size * (size_t)size);
+        GpuGB::generateHeightmap(heightmap.data(), size, p);
         break;
     }
 }
@@ -374,7 +381,8 @@ int main()
         int w, h;
         glfwGetFramebufferSize(win, &w, &h);
         glViewport(0, 0, w, h);
-        glClearColor(0.18f, 0.18f, 0.19f, 1.0f);
+        // glClearColor(0.18f, 0.18f, 0.19f, 1.0f);
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         float aspect = (h > 0) ? (float)w / (float)h : 1.0f;
@@ -432,6 +440,8 @@ int main()
         if (ImGui::RadioButton("GPU (gradient trick)", computeMode == ComputeMode::GPU1))
             computeMode = ComputeMode::GPU1;
         ImGui::SameLine();
+        if (ImGui::RadioButton("GPU (grid based)", computeMode == ComputeMode::GpuGB))
+            computeMode = ComputeMode::GpuGB;
         if (ImGui::RadioButton("GPU (optimized)", computeMode == ComputeMode::GPU2))
             computeMode = ComputeMode::GPU2;
         ImGui::SameLine();
@@ -509,7 +519,7 @@ int main()
 
         ImGui::Spacing();
         ImGui::Text("Erosion Parameters");
-        ImGui::SliderInt("Num Drops", &eparams.numDrops, 1, 10000000);
+        ImGui::SliderInt("Num Drops", &eparams.numDrops, 1, 1000000);
         ImGui::SliderInt("Max Lifetime", &eparams.maxLifetime, 1, 1000);
         ImGui::SliderFloat("Inertia", &eparams.inertia, 0.0f, 1.0f);
         ImGui::SliderFloat("Sediment Capacity Factor", &eparams.sedimentCapacityFactor, 0.0f, 10.0f);

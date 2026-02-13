@@ -133,8 +133,6 @@ static __global__ void generateKernel(float *d_map, int size, PerlinParams p, co
 
 void GpuGB::generateHeightmap(float *heightmap, int size, PerlinParams p)
 {
-    std::cout << "Generating heightmap on GPU1..." << std::endl;
-
     const size_t mapBytes = size * size * sizeof(float);
     const size_t offsetsBytes = p.numOctaves * sizeof(float2);
 
